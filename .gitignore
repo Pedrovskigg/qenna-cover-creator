@@ -1,0 +1,7 @@
+node_modules/
+dist/
+builds/
+electron/probe.cjs
+*.log
+.DS_Store
+Thumbs.db
