@@ -39,7 +39,7 @@ export default function CoverCreator() {
       try {
         const current = await window.miraCover?.getVersion?.() || "0.0.0";
         const res = await fetch(
-          "https://api.github.com/repos/Pedrovskigg/mira-cover-creator/releases/latest",
+          "https://api.github.com/repos/Pedrovskigg/qenna-cover-creator/releases/latest",
           { headers: { Accept: "application/vnd.github+json" } }
         );
         const data = await res.json();
