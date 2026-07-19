@@ -69,7 +69,7 @@ export function buildDefaultCoverTextLayers(data = {}) {
 
   if (!layers.length) {
     layers.push(makeCoverTextLayer({
-      role: "title", text: "Texto", x: 0.5, y: 0.22,
+      role: "title", text: "Text", x: 0.5, y: 0.22,
       fontFamily: data.titleFontFamily || "Crimson Text",
       fontSize: Math.max(18, Number(data.titleFontSize) || 96),
       fontWeight: data.titleFontWeight || "normal",

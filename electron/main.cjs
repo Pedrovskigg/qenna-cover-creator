@@ -19,7 +19,10 @@ electron.protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-const projectPathArg = process.argv[2] || null;
+// Dev: electron . <path> → argv[2] | Produção: MiraCover.exe <path> → argv[1]
+const projectPathArg = app.isPackaged
+  ? (process.argv[1] || null)
+  : (process.argv[2] || null);
 
 let mainWindow = null;
 
@@ -42,15 +45,22 @@ function createWindow() {
 
   mainWindow.setMenuBarVisibility(false);
 
-  const isDev = !app.isPackaged;
-  if (isDev) {
-    mainWindow.loadURL("http://localhost:5174");
+  const distIndex = path.join(__dirname, "..", "dist", "index.html");
+  if (app.isPackaged || require("node:fs").existsSync(distIndex)) {
+    mainWindow.loadFile(distIndex);
   } else {
-    mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+    mainWindow.loadURL("http://localhost:5174");
   }
 }
 
 app.whenReady().then(() => {
+  // Grava a versão instalada num arquivo que o Mira Writing pode ler
+  // sem precisar lançar o app.
+  try {
+    const vFile = path.join(__dirname, "..", "cover-version.txt");
+    require("node:fs").writeFileSync(vFile, app.getVersion(), "utf8");
+  } catch {}
+
   electron.protocol.handle("mira-file", async (request) => {
     try {
       const url = new URL(request.url);
@@ -76,6 +86,7 @@ app.on("window-all-closed", () => {
 });
 
 ipcMain.handle("cover:getProjectPath", () => projectPathArg);
+ipcMain.handle("cover:getVersion", () => app.getVersion());
 
 ipcMain.handle("cover:readFile", async (_event, absPath) => {
   try {
@@ -136,7 +147,7 @@ ipcMain.handle("cover:getMiraFileUrl", (_event, absPath) => {
 
 ipcMain.handle("cover:saveAndClose", async (_event, coverDataUrl, coverStateJson, projectRoot) => {
   try {
-    if (!projectRoot) throw new Error("projectRoot não fornecido");
+    if (!projectRoot) throw new Error("projectRoot not provided");
     const coverJpgPath = path.join(projectRoot, "cover.jpg");
     const base64Data = coverDataUrl.replace(/^data:image\/\w+;base64,/, "");
     const buffer = Buffer.from(base64Data, "base64");

@@ -179,7 +179,7 @@ export default function CoverCropper({
 
   return (
     <div className={`coverCropper ${className}`.trim()}>
-      {showLabels ? <div className="coverCropperLabel">Corte da imagem</div> : null}
+      {showLabels ? <div className="coverCropperLabel">Image crop</div> : null}
       <div
         ref={frameRef}
         className={`coverCropperFrame ${frameClassName} ${dragging ? "isDragging" : ""}`.trim()}
@@ -189,7 +189,7 @@ export default function CoverCropper({
           <img
             className="coverCropperImage"
             src={image}
-            alt="Corte"
+            alt="Crop"
             onLoad={(e) =>
               setImgSize({
                 w: e.currentTarget.naturalWidth,
@@ -211,7 +211,7 @@ export default function CoverCropper({
       </div>
       {showLabels ? (
         <div className="coverCropperHint">
-          Arraste a imagem para ajustar o corte, use o scroll para zoom.
+          Drag the image to adjust the crop, use scroll to zoom.
         </div>
       ) : null}
     </div>

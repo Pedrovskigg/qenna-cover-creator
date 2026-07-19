@@ -14,13 +14,42 @@ import { buildFontString, wrapText } from "./canvas/text.js";
 
 // ── Root: carrega projeto e gerencia estado ────────────────────────────────────
 
+function compareVersions(a, b) {
+  const pa = String(a || "0").split(".").map(Number);
+  const pb = String(b || "0").split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const va = pa[i] || 0, vb = pb[i] || 0;
+    if (va !== vb) return va > vb ? 1 : -1;
+  }
+  return 0;
+}
+
 export default function CoverCreator() {
   const [projectRoot, setProjectRoot] = useState(null);
   const [creator, setCreator] = useState(null);
   const [preview, setPreview] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState(null);
   const bgInputRef = useRef(null);
   const previewRafRef = useRef(0);
+
+  // Checa atualização do Cover Creator ao abrir
+  useEffect(() => {
+    (async () => {
+      try {
+        const current = await window.miraCover?.getVersion?.() || "0.0.0";
+        const res = await fetch(
+          "https://api.github.com/repos/Pedrovskigg/mira-cover-creator/releases/latest",
+          { headers: { Accept: "application/vnd.github+json" } }
+        );
+        const data = await res.json();
+        const latest = (data.tag_name || "").replace(/^v/i, "");
+        if (latest && compareVersions(latest, current) > 0) {
+          setUpdateInfo({ version: latest, url: data.html_url });
+        }
+      } catch {}
+    })();
+  }, []);
 
   // Carrega caminho do projeto e estado salvo
   useEffect(() => {
@@ -99,7 +128,7 @@ export default function CoverCreator() {
   if (!creator) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", color: "#aaa", fontSize: 14 }}>
-        Carregando…
+        Loading…
       </div>
     );
   }
@@ -107,6 +136,23 @@ export default function CoverCreator() {
   return (
     <>
       <input ref={bgInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleBgFile} />
+      {updateInfo && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999,
+          background: "var(--ui-accent,#6ea8fe)", color: "#fff",
+          fontSize: 12, padding: "6px 14px",
+          display: "flex", alignItems: "center", gap: 10,
+        }}>
+          <span>New version available: <strong>v{updateInfo.version}</strong></span>
+          <a href={updateInfo.url} target="_blank" rel="noreferrer"
+            style={{ color: "#fff", fontWeight: 600, marginLeft: 4 }}>
+            View on GitHub →
+          </a>
+          <button onClick={() => setUpdateInfo(null)}
+            style={{ marginLeft: "auto", background: "none", border: "none",
+                     color: "#fff", cursor: "pointer", fontSize: 14 }}>✕</button>
+        </div>
+      )}
       <CoverCreatorModal
         creator={creator}
         preview={preview}
@@ -365,8 +411,8 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
 
         {/* Header */}
         <div className="coverCreatorHeader">
-          <span className="coverCreatorTitle">Criar capa</span>
-          <button className="coverCreatorCloseBtn" onClick={onClose} title="Fechar"><IconX size={16} /></button>
+          <span className="coverCreatorTitle">Create cover</span>
+          <button className="coverCreatorCloseBtn" onClick={onClose} title="Close"><IconX size={16} /></button>
         </div>
 
         <div className={`ccWorkspace ${safeCreator.previewExpanded ? "isExpanded" : ""}`.trim()} onMouseDown={() => setOpenPanel(null)}>
@@ -396,7 +442,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
             ) : (
               <>
                 <div className="coverCreatorPreview" ref={previewRef}>
-                  {preview ? <img src={preview} alt="Prévia" /> : <div className="muted">Prévia</div>}
+                  {preview ? <img src={preview} alt="Preview" /> : <div className="muted">Preview</div>}
                   {safeCreator?.bgImage && (
                     <CoverCropper
                       image={safeCreator.bgImage}
@@ -457,25 +503,25 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                           onMouseDown={(e) => handleLayerMouseDown(e, layer.id)}
                           onClick={() => commit((prev) => ({ ...prev, activeLayerId: layer.id }))}
                         >
-                          {previewWrappedTextByLayer[layer.id] || layer.text || "Texto"}
+                          {previewWrappedTextByLayer[layer.id] || layer.text || "Text"}
                         </div>
                       );
                     })}
                   </div>
                 </div>
 
-                <div className="coverCreatorPreviewHint">Arraste para posicionar · Delete para remover</div>
+                <div className="coverCreatorPreviewHint">Drag to position · Delete to remove</div>
 
                 <div className="ccPreviewBar">
-                  <label className="ccToolbarBtn" title="Cor do fundo" style={{ position: "relative" }}>
+                  <label className="ccToolbarBtn" title="Background color" style={{ position: "relative" }}>
                     <span style={{ width: 14, height: 14, borderRadius: 3, background: safeCreator.bgColor, border: "1px solid rgba(255,255,255,0.2)", display: "block" }} />
                     <input className="coverCreatorSwatch" type="color" value={safeCreator.bgColor}
                       onChange={(e) => commit((prev) => ({ ...prev, bgColor: e.target.value }))} />
                   </label>
-                  <button className="ccToolbarBtn" onClick={() => commit((prev) => ({ ...prev, previewExpanded: !prev.previewExpanded }))} title="Expandir">
+                  <button className="ccToolbarBtn" onClick={() => commit((prev) => ({ ...prev, previewExpanded: !prev.previewExpanded }))} title="Expand">
                     <IconMaximize size={14} />
                   </button>
-                  <button className="ccToolbarBtn" onClick={onExport} title="Exportar">
+                  <button className="ccToolbarBtn" onClick={onExport} title="Export">
                     <IconDownload size={14} />
                   </button>
                 </div>
@@ -518,22 +564,22 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
               <button className={`ccSidebarTool ${openPanel === "image" || safeCreator.bgImage ? "isActive" : ""}`}
                 onClick={(e) => { e.stopPropagation(); togglePanel("image"); }}>
                 <IconImage size={16} />
-                <span className="ccSidebarToolLabel">Imagem</span>
+                <span className="ccSidebarToolLabel">Image</span>
               </button>
               {openPanel === "image" && (
                 <div className="ccPopover">
-                  <div className="ccPopoverTitle">Imagem de fundo</div>
-                  <button className="ccAddMenuItem" onClick={() => { bgInputRef.current?.click?.(); setOpenPanel(null); }}>Do computador</button>
+                  <div className="ccPopoverTitle">Background image</div>
+                  <button className="ccAddMenuItem" onClick={() => { bgInputRef.current?.click?.(); setOpenPanel(null); }}>From computer</button>
                   {baseCoverImages.length > 0 && (
-                    <button className="ccAddMenuItem" onClick={() => { setShowBaseImages(true); setOpenPanel(null); }}>Galeria do app</button>
+                    <button className="ccAddMenuItem" onClick={() => { setShowBaseImages(true); setOpenPanel(null); }}>App gallery</button>
                   )}
                   {safeCreator.bgImage && (
-                    <button className="ccAddMenuItem" onClick={() => setOpenPanel("imageEdit")}>Editar imagem</button>
+                    <button className="ccAddMenuItem" onClick={() => setOpenPanel("imageEdit")}>Edit image</button>
                   )}
                   {safeCreator.bgImage && (
                     <button className="ccAddMenuItem" style={{ color: "#f87171" }}
                       onClick={() => { commit((p) => ({ ...p, bgImage: null, bgFilter: defaultBgFilter() })); setOpenPanel(null); }}>
-                      Remover
+                      Remove
                     </button>
                   )}
                 </div>
@@ -548,16 +594,16 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
               <button className={`ccSidebarTool ${safeCreator.borderEnabled ? "isActive" : ""}`}
                 onClick={(e) => { e.stopPropagation(); togglePanel("border"); }}>
                 <IconBorderFrame size={17} />
-                <span className="ccSidebarToolLabel">Borda</span>
+                <span className="ccSidebarToolLabel">Border</span>
               </button>
               {openPanel === "border" && (
                 <div className="ccPopover">
-                  <div className="ccPopoverTitle">Borda da capa</div>
+                  <div className="ccPopoverTitle">Cover border</div>
                   <div className="ccPropRow">
                     <label className="ccBorderToggle">
                       <input type="checkbox" checked={!!safeCreator.borderEnabled}
                         onChange={(e) => commit((p) => ({ ...p, borderEnabled: e.target.checked }))} />
-                      <span>Ativa</span>
+                      <span>Enabled</span>
                     </label>
                   </div>
                   {safeCreator.borderEnabled && (
@@ -567,7 +613,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                           onChange={(e) => commit((p) => ({ ...p, borderColor: e.target.value }))} />
                         <span className="ccColorDot" style={{ background: safeCreator.borderColor }} />
                       </label>
-                      <span className="ccPropLabel">Cor</span>
+                      <span className="ccPropLabel">Color</span>
                       <input className="ccNumInput" type="number" min={1} max={30}
                         value={safeCreator.borderWidth}
                         onChange={(e) => commit((p) => ({ ...p, borderWidth: Number(e.target.value) || 5 }))} />
@@ -581,7 +627,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
             {/* Salvar */}
             <button className="ccSidebarSave" onClick={onSave} disabled={saving}>
               <IconSave size={16} />
-              <span>{saving ? "Salvando…" : "OK"}</span>
+              <span>{saving ? "Saving…" : "OK"}</span>
             </button>
           </div>
         </div>
@@ -600,7 +646,7 @@ function LayerList({ safeCreator, openPanel, onSelectLayer, onAddMenu, onAddText
           <button key={layer.id}
             className={`ccSidebarLayer ${safeCreator.activeLayerId === layer.id ? "isActive" : ""}`}
             onClick={() => onSelectLayer(layer.id)}
-            title={layer.role === "title" ? "Título" : layer.role === "author" ? "Autor" : layer.text || "Texto"}>
+            title={layer.role === "title" ? "Title" : layer.role === "author" ? "Author" : layer.text || "Text"}>
             {layer.role === "title" ? "T" : layer.role === "author" ? "A" : layer.role === "symbol" ? (layer.text || "*").slice(0, 1) : (layer.text || "t").slice(0, 2)}
           </button>
         ))}
@@ -622,11 +668,11 @@ function LayerList({ safeCreator, openPanel, onSelectLayer, onAddMenu, onAddText
         </button>
         {openPanel === "add" && (
           <div className="ccPopover ccPopoverDown">
-            <div className="ccPopoverTitle">Adicionar</div>
-            <button className="ccAddMenuItem" onClick={onAddText}>T Texto</button>
-            <button className="ccAddMenuItem" onClick={onAddSymbol}>✦ Símbolo</button>
+            <div className="ccPopoverTitle">Add</div>
+            <button className="ccAddMenuItem" onClick={onAddText}>T Text</button>
+            <button className="ccAddMenuItem" onClick={onAddSymbol}>✦ Symbol</button>
             <div className="ccAddMenuSep" />
-            {[{ s: "rect", l: "▭ Retângulo" }, { s: "circle", l: "◯ Círculo" }, { s: "line", l: "— Linha" }, { s: "triangle", l: "△ Triângulo" }, { s: "diamond", l: "◇ Diamante" }]
+            {[{ s: "rect", l: "▭ Rectangle" }, { s: "circle", l: "◯ Circle" }, { s: "line", l: "— Line" }, { s: "triangle", l: "△ Triangle" }, { s: "diamond", l: "◇ Diamond" }]
               .map(({ s, l }) => (
                 <button key={s} className="ccAddMenuItem" onClick={() => onAddShape(s)}>{l}</button>
               ))}
@@ -646,11 +692,11 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
           <button className={`ccSidebarTool ${openPanel === "font" ? "isActive" : ""}`}
             onClick={(e) => { e.stopPropagation(); togglePanel("font"); }}>
             <IconFilter size={17} />
-            <span className="ccSidebarToolLabel">{selectedLayer.role === "symbol" ? "Simb." : "Texto"}</span>
+            <span className="ccSidebarToolLabel">{selectedLayer.role === "symbol" ? "Sym." : "Text"}</span>
           </button>
           {openPanel === "font" && (
             <div className="ccPopover">
-              <div className="ccPopoverTitle">{selectedLayer.role === "symbol" ? "Símbolo" : "Texto"}</div>
+              <div className="ccPopoverTitle">{selectedLayer.role === "symbol" ? "Symbol" : "Text"}</div>
               {selectedLayer.role === "symbol" ? (
                 <>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
@@ -675,7 +721,7 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
                 <>
                   <div className="ccInputRow">
                     <input className="modalInput ccTextInput" value={selectedLayer.text}
-                      onChange={(e) => updateSelectedLayer({ text: e.target.value })} placeholder="Texto" />
+                      onChange={(e) => updateSelectedLayer({ text: e.target.value })} placeholder="Text" />
                     <label className="ccColorBtn">
                       <input type="color" value={selectedLayer.color} onChange={(e) => updateSelectedLayer({ color: e.target.value })} />
                       <span className="ccColorDot" style={{ background: selectedLayer.color }} />
@@ -723,22 +769,22 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
             <span className="ccSidebarToolIcon">
               {selectedLayer.shape === "circle" ? "◯" : selectedLayer.shape === "line" ? "—" : selectedLayer.shape === "triangle" ? "△" : selectedLayer.shape === "diamond" ? "◇" : "▭"}
             </span>
-            <span className="ccSidebarToolLabel">Forma</span>
+            <span className="ccSidebarToolLabel">Shape</span>
           </button>
           {openPanel === "shape" && (
             <div className="ccPopover">
-              <div className="ccPopoverTitle">Forma</div>
+              <div className="ccPopoverTitle">Shape</div>
               <div className="ccStyleBar">
                 {[{ s: "rect", l: "[]" }, { s: "circle", l: "O" }, { s: "line", l: "-" }, { s: "triangle", l: "^" }, { s: "diamond", l: "<>" }].map(({ s, l }) => (
                   <button key={s} className={`ccStyleBtn ${selectedLayer.shape === s ? "isActive" : ""}`}
                     onClick={() => updateSelectedLayer({ shape: s })}>{l}</button>
                 ))}
                 <span className="ccStyleSep" />
-                <button className={`ccStyleBtn ${(selectedLayer.fillOpacity ?? 1) === 0 ? "isActive" : ""}`} title="Oco"
+                <button className={`ccStyleBtn ${(selectedLayer.fillOpacity ?? 1) === 0 ? "isActive" : ""}`} title="Hollow"
                   onClick={() => {
                     const hollow = (selectedLayer.fillOpacity ?? 1) === 0;
                     updateSelectedLayer({ fillOpacity: hollow ? 1 : 0, strokeWidth: hollow ? selectedLayer.strokeWidth : (Number(selectedLayer.strokeWidth) || 0) > 0 ? selectedLayer.strokeWidth : 3 });
-                  }}>oco</button>
+                  }}>hollow</button>
               </div>
               {selectedLayer.shape !== "line" ? (
                 <div className={`ccFieldGrid ${selectedLayer.shape === "rect" ? "cols4" : "cols3"}`}>
@@ -797,22 +843,22 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
         <button className={`ccSidebarTool ${openPanel === "color" ? "isActive" : ""}`}
           onClick={(e) => { e.stopPropagation(); togglePanel("color"); }}>
           <span style={{ width: 20, height: 20, borderRadius: "50%", background: selectedIsShape ? (selectedLayer.fill || "#fff") : (selectedLayer.color || "#fff"), border: "2px solid rgba(255,255,255,0.25)", display: "block" }} />
-          <span className="ccSidebarToolLabel">Cor</span>
+          <span className="ccSidebarToolLabel">Color</span>
         </button>
         {openPanel === "color" && (
           <div className="ccPopover">
-            <div className="ccPopoverTitle">Cor</div>
+            <div className="ccPopoverTitle">Color</div>
             {selectedIsShape ? (
               <>
                 <div className="ccPropRow">
                   <label className="ccColorBtn"><input type="color" value={selectedLayer.fill || "#fff"} onChange={(e) => updateSelectedLayer({ fill: e.target.value })} /><span className="ccColorDot" style={{ background: selectedLayer.fill || "#fff" }} /></label>
-                  <span className="ccPropLabel">Preench.</span>
+                  <span className="ccPropLabel">Fill</span>
                   <input className="ccNumInput" type="number" min={0} max={100} value={Math.round((selectedLayer.fillOpacity ?? 1) * 100)} onChange={(e) => updateSelectedLayer({ fillOpacity: Math.max(0, Math.min(100, Number(e.target.value))) / 100 })} />
                   <span className="ccNumSuffix">%</span>
                 </div>
                 <div className="ccPropRow">
                   <label className="ccColorBtn"><input type="color" value={selectedLayer.strokeColor || "#fff"} onChange={(e) => updateSelectedLayer({ strokeColor: e.target.value })} /><span className="ccColorDot" style={{ background: selectedLayer.strokeColor || "#fff" }} /></label>
-                  <span className="ccPropLabel">Contorno</span>
+                  <span className="ccPropLabel">Outline</span>
                   <input className="ccNumInput" type="number" min={0} max={30} step={0.5} value={Number(selectedLayer.strokeWidth) || 0} onChange={(e) => updateSelectedLayer({ strokeWidth: Math.max(0, Number(e.target.value)) })} />
                   <span className="ccNumSuffix">px</span>
                 </div>
@@ -820,7 +866,7 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
             ) : (
               <div className="ccPropRow">
                 <label className="ccColorBtn"><input type="color" value={selectedLayer.color || "#fff"} onChange={(e) => updateSelectedLayer({ color: e.target.value })} /><span className="ccColorDot" style={{ background: selectedLayer.color || "#fff" }} /></label>
-                <span className="ccPropLabel">Cor do texto</span>
+                <span className="ccPropLabel">Text color</span>
               </div>
             )}
           </div>
@@ -832,16 +878,16 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
         <button className={`ccSidebarTool ${openPanel === "bevel" ? "isActive" : ""}`}
           onClick={(e) => { e.stopPropagation(); togglePanel("bevel"); }}>
           <IconBevel size={17} />
-          <span className="ccSidebarToolLabel">Entalhe</span>
+          <span className="ccSidebarToolLabel">Bevel</span>
         </button>
         {openPanel === "bevel" && (
           <div className="ccPopover">
-            <div className="ccPopoverTitle">Entalhe</div>
+            <div className="ccPopoverTitle">Bevel</div>
             <select className="ccBevelSelect" style={{ width: "100%" }} value={selectedLayer.bevel || "none"} onChange={(e) => updateSelectedLayer({ bevel: e.target.value })}>
-              <option value="none">Sem entalhe</option>
-              <option value="emboss">Relevo</option><option value="engrave">Entalhado</option>
-              <option value="gold">Ouro</option><option value="silver">Prata</option>
-              <option value="copper">Cobre</option><option value="laser">Laser</option>
+              <option value="none">No bevel</option>
+              <option value="emboss">Emboss</option><option value="engrave">Engrave</option>
+              <option value="gold">Gold</option><option value="silver">Silver</option>
+              <option value="copper">Copper</option><option value="laser">Laser</option>
               <option value="custom">Custom</option>
             </select>
             {selectedLayer.bevel && selectedLayer.bevel !== "none" && (
@@ -864,14 +910,14 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
         <button className={`ccSidebarTool ${openPanel === "shadow" ? "isActive" : ""}`}
           onClick={(e) => { e.stopPropagation(); togglePanel("shadow"); }}>
           <IconShadow size={17} />
-          <span className="ccSidebarToolLabel">Sombra</span>
+          <span className="ccSidebarToolLabel">Shadow</span>
         </button>
         {openPanel === "shadow" && (
           <div className="ccPopover">
-            <div className="ccPopoverTitle">Sombra</div>
+            <div className="ccPopoverTitle">Shadow</div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <label className="ccColorBtn"><input type="color" value={selectedLayer.shadowColor || "#000"} onChange={(e) => updateSelectedLayer({ shadowColor: e.target.value })} /><span className="ccColorDot" style={{ background: selectedLayer.shadowColor || "#000" }} /></label>
-              <span style={{ fontSize: 11, color: "var(--ui-muted)" }}>Cor</span>
+              <span style={{ fontSize: 11, color: "var(--ui-muted)" }}>Color</span>
             </div>
             <div className="ccKnobGroup">
               <CcKnob label="Blur" value={Number(selectedLayer.shadowBlur) || 0} min={0} max={60} step={1} onChange={(v) => updateSelectedLayer({ shadowBlur: v })} />
@@ -887,11 +933,11 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
         <button className={`ccSidebarTool ${openPanel === "glow" ? "isActive" : ""}`}
           onClick={(e) => { e.stopPropagation(); togglePanel("glow"); }}>
           <IconGlow size={17} />
-          <span className="ccSidebarToolLabel">Brilho</span>
+          <span className="ccSidebarToolLabel">Glow</span>
         </button>
         {openPanel === "glow" && (
           <div className="ccPopover">
-            <div className="ccPopoverTitle">Brilho</div>
+            <div className="ccPopoverTitle">Glow</div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <label className="ccColorBtn"><input type="color" value={selectedLayer.glowColor || "#fff"} onChange={(e) => updateSelectedLayer({ glowColor: e.target.value })} /><span className="ccColorDot" style={{ background: selectedLayer.glowColor || "#fff" }} /></label>
               <CcKnob label="Int." size={44} value={Number(selectedLayer.glowSize) || 0} min={0} max={60} step={1} onChange={(v) => updateSelectedLayer({ glowSize: v })} />
@@ -906,14 +952,14 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
           <button className={`ccSidebarTool ${openPanel === "stroke" ? "isActive" : ""}`}
             onClick={(e) => { e.stopPropagation(); togglePanel("stroke"); }}>
             <IconStroke size={17} />
-            <span className="ccSidebarToolLabel">Contorno</span>
+            <span className="ccSidebarToolLabel">Outline</span>
           </button>
           {openPanel === "stroke" && (
             <div className="ccPopover">
-              <div className="ccPopoverTitle">Contorno</div>
+              <div className="ccPopoverTitle">Outline</div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <label className="ccColorBtn"><input type="color" value={selectedLayer.strokeColor || "#000"} onChange={(e) => updateSelectedLayer({ strokeColor: e.target.value })} /><span className="ccColorDot" style={{ background: selectedLayer.strokeColor || "#000" }} /></label>
-                <CcKnob label="Esp." size={44} value={Number(selectedLayer.strokeWidth) || 0} min={0} max={16} step={0.5} onChange={(v) => updateSelectedLayer({ strokeWidth: v })} />
+                <CcKnob label="Wid." size={44} value={Number(selectedLayer.strokeWidth) || 0} min={0} max={16} step={0.5} onChange={(v) => updateSelectedLayer({ strokeWidth: v })} />
               </div>
             </div>
           )}
@@ -929,11 +975,11 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
         </button>
         {openPanel === "transform" && (
           <div className="ccPopover">
-            <div className="ccPopoverTitle">Transformação</div>
+            <div className="ccPopoverTitle">Transform</div>
             <div className="ccKnobGroup">
               <CcKnob label="Rot." value={Number(selectedLayer.angle) || 0} min={-180} max={180} step={1} onChange={(v) => updateSelectedLayer({ angle: v })} />
               <CcKnob label="Opa." value={Math.round((selectedLayer.opacity ?? 1) * 100)} min={0} max={100} step={1} fmt={(v) => `${v}%`} onChange={(v) => updateSelectedLayer({ opacity: v / 100 })} />
-              {!selectedIsShape && <CcKnob label="Esp." value={Number(selectedLayer.letterSpacing) || 0} min={-20} max={60} step={1} onChange={(v) => updateSelectedLayer({ letterSpacing: v })} />}
+              {!selectedIsShape && <CcKnob label="Spc." value={Number(selectedLayer.letterSpacing) || 0} min={-20} max={60} step={1} onChange={(v) => updateSelectedLayer({ letterSpacing: v })} />}
               {!selectedIsShape && <CcKnob label="W%" value={Math.round((Number(selectedLayer.maxWidth) || 0.78) * 100)} min={20} max={95} step={1} fmt={(v) => `${v}%`} onChange={(v) => updateSelectedLayer({ maxWidth: v / 100 })} />}
             </div>
           </div>
@@ -965,29 +1011,29 @@ function ImageEditPanel({ bgFilter, commit, onBack }) {
   return (
     <div className="ccPopover" style={{ minWidth: 260 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-        <button className="ccAddMenuItem" style={{ padding: "2px 6px", fontSize: 10 }} onClick={onBack}>Voltar</button>
-        <div className="ccPopoverTitle" style={{ marginBottom: 0 }}>Editar imagem</div>
+        <button className="ccAddMenuItem" style={{ padding: "2px 6px", fontSize: 10 }} onClick={onBack}>Back</button>
+        <div className="ccPopoverTitle" style={{ marginBottom: 0 }}>Edit image</div>
       </div>
       <div className="ccFilterPresets">
-        {[{ key: "none", label: "Original" }, { key: "bw", label: "P&B" }, { key: "bw-warm", label: "P&B Q" }, { key: "bw-cool", label: "P&B F" },
+        {[{ key: "none", label: "Original" }, { key: "bw", label: "B&W" }, { key: "bw-warm", label: "B&W Warm" }, { key: "bw-cool", label: "B&W Cool" },
           { key: "sepia", label: "Sepia" }, { key: "negative", label: "Neg." }, { key: "vintage", label: "Vintage" }, { key: "fade", label: "Fade" },
-          { key: "warm", label: "Quente" }, { key: "cool", label: "Frio" }, { key: "noir", label: "Noir" }, { key: "dramatic", label: "Drama." }]
+          { key: "warm", label: "Warm" }, { key: "cool", label: "Cool" }, { key: "noir", label: "Noir" }, { key: "dramatic", label: "Dram." }]
           .map(({ key, label }) => (
             <button key={key} className={`ccFilterPresetBtn ${bgFilter.type === key ? "isActive" : ""}`}
               onClick={() => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, type: key } }))}>{label}</button>
           ))}
       </div>
       <div className="ccKnobGroup" style={{ justifyContent: "center", flexWrap: "wrap" }}>
-        <CcKnob label="Brilho"    value={bgFilter.brightness}      min={30}  max={170} step={1} onChange={(v) => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, brightness: v } }))} />
-        <CcKnob label="Contraste" value={bgFilter.contrast}        min={30}  max={200} step={1} onChange={(v) => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, contrast: v } }))} />
-        <CcKnob label="Saturação" value={bgFilter.saturation}      min={0}   max={200} step={1} onChange={(v) => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, saturation: v } }))} />
+        <CcKnob label="Bright."   value={bgFilter.brightness}      min={30}  max={170} step={1} onChange={(v) => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, brightness: v } }))} />
+        <CcKnob label="Contrast" value={bgFilter.contrast}        min={30}  max={200} step={1} onChange={(v) => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, contrast: v } }))} />
+        <CcKnob label="Satur." value={bgFilter.saturation}      min={0}   max={200} step={1} onChange={(v) => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, saturation: v } }))} />
         <CcKnob label="Temp."     value={bgFilter.temperature ?? 0} min={-100} max={100} step={1} onChange={(v) => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, temperature: v } }))} />
         <CcKnob label="High."     value={bgFilter.highlights ?? 0} min={0}   max={100} step={1} onChange={(v) => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, highlights: v } }))} />
-        <CcKnob label="Sombras"   value={bgFilter.shadows ?? 0}    min={0}   max={100} step={1} onChange={(v) => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, shadows: v } }))} />
-        <CcKnob label="Nitidez"   value={bgFilter.sharpness ?? 0}  min={0}   max={100} step={1} onChange={(v) => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, sharpness: v } }))} />
+        <CcKnob label="Shadows"   value={bgFilter.shadows ?? 0}    min={0}   max={100} step={1} onChange={(v) => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, shadows: v } }))} />
+        <CcKnob label="Sharp."   value={bgFilter.sharpness ?? 0}  min={0}   max={100} step={1} onChange={(v) => commit((p) => ({ ...p, bgFilter: { ...p.bgFilter, sharpness: v } }))} />
       </div>
       <button className="ccBtnSecondary" style={{ width: "100%", fontSize: 11, marginTop: 4 }}
-        onClick={() => commit((p) => ({ ...p, bgFilter: defaultBgFilter() }))}>Resetar</button>
+        onClick={() => commit((p) => ({ ...p, bgFilter: defaultBgFilter() }))}>Reset</button>
     </div>
   );
 }
@@ -996,8 +1042,8 @@ function BaseImageGallery({ images, thumbs, onSelect, onClose }) {
   return (
     <div style={{ width: "100%", maxWidth: 420, background: "var(--ui-menu,#1e1e22)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, overflow: "hidden", flexShrink: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px 8px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-        <span style={{ fontWeight: 600, fontSize: 12 }}>Galeria do app</span>
-        <button className="coverCreatorCloseBtn" onClick={onClose} title="Fechar"><IconX size={13} /></button>
+        <span style={{ fontWeight: 600, fontSize: 12 }}>App gallery</span>
+        <button className="coverCreatorCloseBtn" onClick={onClose} title="Close"><IconX size={13} /></button>
       </div>
       <div className="ccBaseImagesGrid" style={{ margin: "8px 10px", maxHeight: 380 }}>
         {images.map((img) => (
