@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import CoverCropper from "./CoverCropper.jsx";
 import CcKnob from "./ui/CcKnob.jsx";
-import { IconX, IconFilter, IconMaximize, IconDownload, IconBevel, IconShadow, IconGlow, IconStroke, IconTransform, IconBorderFrame, IconSave, IconTrash, IconImage } from "./icons/index.jsx";
+import { IconX, IconFilter, IconMaximize, IconDownload, IconBevel, IconShadow, IconGlow, IconStroke, IconTransform, IconBorderFrame, IconSave, IconTrash, IconImage, IconSettings, IconSparkle } from "./icons/index.jsx";
 import { COVER_FONT_OPTIONS } from "./data/fonts.js";
 import { COVER_EMOJI_PICKS } from "./data/symbols.js";
+import { COVER_STYLE_PRESETS } from "./ai/coverStylePresets.js";
+import { generateCoverArt } from "./ai/coverImageGen.js";
 import { clamp01 } from "./utils/math.js";
 import { defaultBgFilter, buildImageFilterString } from "./canvas/filters.js";
 import { makeCoverTextLayer, applyCoverLayerPatch, addCustomCoverLayer, addSymbolCoverLayer } from "./layers/textLayer.js";
@@ -87,8 +89,24 @@ export default function CoverCreator() {
         textScale: 1200 / 720,
         ...creator,
       });
+      // Render sem texto, pequeno — a Prateleira 3D do Qenna usa isso como
+      // textura opcional da lombada (mesmo fundo/foco/zoom/filtro da capa,
+      // só sem o título por cima), sampleada num offset horizontal escolhido
+      // pelo usuário. Sem imagem de fundo, não há o que gerar.
+      const coverBgDataUrl = creator.bgImage
+        ? await renderCoverDataUrl({
+            width: 400, height: 600,
+            bgColor: creator.bgColor,
+            bgImage: creator.bgImage,
+            bgImageFocusX: creator.bgImageFocusX,
+            bgImageFocusY: creator.bgImageFocusY,
+            bgImageScale: creator.bgImageScale,
+            bgFilter: creator.bgFilter,
+            renderText: false,
+          })
+        : null;
       const stateJson = JSON.stringify(serializeCoverState(creator), null, 2);
-      await window.miraCover.saveAndClose(coverDataUrl, stateJson, projectRoot);
+      await window.miraCover.saveAndClose(coverDataUrl, stateJson, projectRoot, coverBgDataUrl);
     } catch (err) {
       console.error("save error", err);
       setSaving(false);
@@ -182,6 +200,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
   const [baseCoverImages, setBaseCoverImages] = useState([]);
   const [baseCoverThumbs, setBaseCoverThumbs] = useState({});
   const [openPanel, setOpenPanel] = useState(null);
+  const [showAiSettings, setShowAiSettings] = useState(false);
 
   const safeCreator = ensureCoverCreatorState(creator);
   const allLayers = [...(safeCreator?.textLayers || []), ...(safeCreator?.shapeLayers || [])];
@@ -412,8 +431,14 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
         {/* Header */}
         <div className="coverCreatorHeader">
           <span className="coverCreatorTitle">Create cover</span>
-          <button className="coverCreatorCloseBtn" onClick={onClose} title="Close"><IconX size={16} /></button>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button className="coverCreatorCloseBtn" onClick={() => setShowAiSettings(true)} title="AI settings">
+              <IconSettings size={16} />
+            </button>
+            <button className="coverCreatorCloseBtn" onClick={onClose} title="Close"><IconX size={16} /></button>
+          </div>
         </div>
+        {showAiSettings && <AiSettingsModal onClose={() => setShowAiSettings(false)} />}
 
         <div className={`ccWorkspace ${safeCreator.previewExpanded ? "isExpanded" : ""}`.trim()} onMouseDown={() => setOpenPanel(null)}>
 
@@ -573,6 +598,9 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                   {baseCoverImages.length > 0 && (
                     <button className="ccAddMenuItem" onClick={() => { setShowBaseImages(true); setOpenPanel(null); }}>App gallery</button>
                   )}
+                  <button className="ccAddMenuItem" style={{ display: "flex", alignItems: "center", gap: 6 }} onClick={() => setOpenPanel("imageAI")}>
+                    <IconSparkle size={13} /> Generate with AI
+                  </button>
                   {safeCreator.bgImage && (
                     <button className="ccAddMenuItem" onClick={() => setOpenPanel("imageEdit")}>Edit image</button>
                   )}
@@ -586,6 +614,16 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
               )}
               {openPanel === "imageEdit" && safeCreator.bgImage && (
                 <ImageEditPanel bgFilter={bgFilter} commit={commit} onBack={() => setOpenPanel("image")} />
+              )}
+              {openPanel === "imageAI" && (
+                <GenerateWithAiPanel
+                  title={safeCreator.textLayers?.find((l) => l.role === "title")?.text}
+                  author={safeCreator.textLayers?.find((l) => l.role === "author")?.text}
+                  commit={commit}
+                  onBack={() => setOpenPanel("image")}
+                  onDone={() => setOpenPanel(null)}
+                  onOpenSettings={() => setShowAiSettings(true)}
+                />
               )}
             </div>
 
@@ -1034,6 +1072,212 @@ function ImageEditPanel({ bgFilter, commit, onBack }) {
       </div>
       <button className="ccBtnSecondary" style={{ width: "100%", fontSize: 11, marginTop: 4 }}
         onClick={() => commit((p) => ({ ...p, bgFilter: defaultBgFilter() }))}>Reset</button>
+    </div>
+  );
+}
+
+function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSettings }) {
+  const [aiConfig, setAiConfig] = useState(null);
+  const [description, setDescription] = useState("");
+  const [stylePreset, setStylePreset] = useState("default");
+  const [imageModel, setImageModel] = useState("gpt-image-1-mini");
+  const [quality, setQuality] = useState("medium");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [offsetY, setOffsetY] = useState(0);
+  const popoverRef = useRef(null);
+
+  // Este popover é bem mais alto que os outros (textarea + selects + botão).
+  // A posição padrão de .ccPopover centraliza no botão que o abre, o que
+  // vaza pra fora da janela quando o botão fica perto do rodapé da sidebar
+  // (ex: "Image"). Depois do primeiro paint, mede o retângulo real e
+  // empurra pra dentro da área visível se necessário.
+  useLayoutEffect(() => {
+    const el = popoverRef.current;
+    if (!el) return;
+    const margin = 12;
+    const rect = el.getBoundingClientRect();
+    let adjust = 0;
+    if (rect.bottom > window.innerHeight - margin) adjust = window.innerHeight - margin - rect.bottom;
+    if (rect.top + adjust < margin) adjust = margin - rect.top;
+    if (adjust !== 0) setOffsetY(adjust);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    window.miraCover?.getEffectiveAiConfig?.().then((res) => {
+      if (!cancelled && res?.success) setAiConfig(res);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const hasKey = !!aiConfig?.apiKey;
+
+  const handleGenerate = useCallback(async () => {
+    if (!hasKey || !description.trim() || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const { dataUrl } = await generateCoverArt({
+        apiKey: aiConfig.apiKey,
+        baseUrl: aiConfig.baseUrl,
+        chatModel: aiConfig.model,
+        imageModel,
+        quality,
+        description,
+        stylePreset,
+        title,
+        author,
+      });
+      commit((prev) => ({ ...prev, bgImage: dataUrl, bgImageFocusX: 0.5, bgImageFocusY: 0.5, bgImageScale: 1 }));
+      onDone();
+    } catch (err) {
+      setError(err.message || "Image generation failed.");
+    } finally {
+      setLoading(false);
+    }
+  }, [hasKey, description, loading, aiConfig, imageModel, quality, stylePreset, title, author, commit, onDone]);
+
+  return (
+    <div ref={popoverRef} className="ccPopover"
+      style={{ minWidth: 280, maxWidth: 320, transform: offsetY ? `translateY(calc(-50% + ${offsetY}px))` : undefined }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <button className="ccAddMenuItem" style={{ padding: "2px 6px", fontSize: 10 }} onClick={onBack}>Back</button>
+        <div className="ccPopoverTitle" style={{ marginBottom: 0 }}>Generate with AI</div>
+      </div>
+
+      {aiConfig && !hasKey && (
+        <div className="ccAiHint">
+          No API key configured. <button className="ccAiHintLink" onClick={onOpenSettings}>Open AI settings</button>
+        </div>
+      )}
+      {hasKey && (
+        <div className="ccAiHint">
+          {aiConfig.source === "qenna" ? "Using the API key from Qenna Writer." : "Using your Cover Creator API key."}
+        </div>
+      )}
+
+      <textarea
+        className="modalInput"
+        rows={3}
+        placeholder="Describe the scene or art you want for the cover…"
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        style={{ resize: "vertical" }}
+      />
+
+      <div className="ccFieldGrid">
+        <div className="ccField" style={{ alignItems: "stretch" }}>
+          <span className="ccFieldLabel">Style</span>
+          <select className="ccBevelSelect" value={stylePreset} onChange={(e) => setStylePreset(e.target.value)}>
+            {COVER_STYLE_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+          </select>
+        </div>
+        <div className="ccField" style={{ alignItems: "stretch" }}>
+          <span className="ccFieldLabel">Quality</span>
+          <select className="ccBevelSelect" value={quality} onChange={(e) => setQuality(e.target.value)}>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="ccField" style={{ alignItems: "stretch" }}>
+        <span className="ccFieldLabel">Model</span>
+        <select className="ccBevelSelect" value={imageModel} onChange={(e) => setImageModel(e.target.value)}>
+          <option value="gpt-image-1-mini">GPT Image 1 Mini</option>
+          <option value="gpt-image-1">GPT Image 1</option>
+        </select>
+      </div>
+
+      {error && <div className="ccAiError">{error}</div>}
+
+      <button className="ccBtnPrimary" style={{ width: "100%" }}
+        disabled={!hasKey || !description.trim() || loading}
+        onClick={handleGenerate}>
+        {loading ? "Generating…" : "Generate"}
+      </button>
+    </div>
+  );
+}
+
+function AiSettingsModal({ onClose }) {
+  const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [model, setModel] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [source, setSource] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [local, effective] = await Promise.all([
+        window.miraCover?.getLocalAiSettings?.(),
+        window.miraCover?.getEffectiveAiConfig?.(),
+      ]);
+      if (cancelled) return;
+      if (local?.success) {
+        setApiKey(local.apiKey || "");
+        setBaseUrl(local.baseUrl || "");
+        setModel(local.model || "");
+      }
+      if (effective?.success) setSource(effective.source);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    try {
+      await window.miraCover?.setLocalAiSettings?.({ apiKey: apiKey.trim(), baseUrl: baseUrl.trim(), model: model.trim() });
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  }, [apiKey, baseUrl, model, onClose]);
+
+  return (
+    <div className="ccAiSettingsOverlay" onMouseDown={onClose}>
+      <div className="ccAiSettingsBox" onMouseDown={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontWeight: 700, fontSize: 13 }}>AI settings</span>
+          <button className="coverCreatorCloseBtn" onClick={onClose} title="Close"><IconX size={14} /></button>
+        </div>
+
+        {!apiKey && source === "qenna" && (
+          <div className="ccAiHint">Currently using the API key configured in Qenna Writer. Set your own below to override it.</div>
+        )}
+
+        <div className="ccAiSettingsField">
+          <label>API key</label>
+          <input className="modalInput" type="password" placeholder="sk-…" value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)} />
+        </div>
+
+        {!showAdvanced ? (
+          <button className="ccAiAdvancedToggle" onClick={() => setShowAdvanced(true)}>Advanced (base URL / model)</button>
+        ) : (
+          <>
+            <div className="ccAiSettingsField">
+              <label>Base URL</label>
+              <input className="modalInput" type="text" placeholder="https://api.openai.com/v1" value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)} />
+            </div>
+            <div className="ccAiSettingsField">
+              <label>Chat model (prompt engineering)</label>
+              <input className="modalInput" type="text" placeholder="gpt-4o-mini" value={model}
+                onChange={(e) => setModel(e.target.value)} />
+            </div>
+          </>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+          <button className="ccBtnSecondary" onClick={onClose}>Cancel</button>
+          <button className="ccBtnPrimary" onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+        </div>
+      </div>
     </div>
   );
 }

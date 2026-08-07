@@ -29,12 +29,30 @@ contextBridge.exposeInMainWorld("miraCover", {
    * @param {string} coverDataUrl  — data URL JPEG da imagem final
    * @param {string} coverStateJson — JSON string do cover-state.json
    * @param {string} projectRoot    — pasta raiz do projeto
+   * @param {?string} coverBgDataUrl — data URL JPEG do fundo sem texto (400x600),
+   *   usado pela Prateleira 3D do Qenna como textura de lombada. Opcional.
    */
-  saveAndClose: (coverDataUrl, coverStateJson, projectRoot) =>
-    ipcRenderer.invoke("cover:saveAndClose", coverDataUrl, coverStateJson, projectRoot),
+  saveAndClose: (coverDataUrl, coverStateJson, projectRoot, coverBgDataUrl) =>
+    ipcRenderer.invoke("cover:saveAndClose", coverDataUrl, coverStateJson, projectRoot, coverBgDataUrl),
 
   /** Fecha sem salvar. */
   close: () => ipcRenderer.invoke("cover:close"),
+
+  /** Versão instalada do Mira Cover. */
+  getVersion: () => ipcRenderer.invoke("cover:getVersion"),
+
+  /** Lê a config de IA salva localmente. Retorna { success, apiKey, baseUrl, model }. */
+  getLocalAiSettings: () => ipcRenderer.invoke("cover:getLocalAiSettings"),
+
+  /** Salva a config de IA local. Retorna { success } | { success:false, error }. */
+  setLocalAiSettings: (settings) => ipcRenderer.invoke("cover:setLocalAiSettings", settings),
+
+  /**
+   * Config de IA efetiva a usar (local tem prioridade sobre a repassada
+   * pelo Qenna Writer no lançamento). Retorna
+   * { success, apiKey, baseUrl, model, source: "local"|"qenna"|null }.
+   */
+  getEffectiveAiConfig: () => ipcRenderer.invoke("cover:getEffectiveAiConfig"),
 
   /** Utilitário: join de caminhos (seguro, sem expor fs). */
   joinPath: (...parts) => path.join(...parts),

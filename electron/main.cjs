@@ -24,6 +24,39 @@ const projectPathArg = app.isPackaged
   ? (process.argv[1] || null)
   : (process.argv[2] || null);
 
+// Argv extra opcional, escrito pelo Qenna Writer: caminho de um JSON de
+// handoff de config de IA ({apiKey, baseUrl, model}), de leitura única.
+// Dev: electron . <coverDir> <path> <aiConfigPath> → argv[3]
+// Produção: MiraCover.exe <path> <aiConfigPath> → argv[2]
+const aiConfigPathArg = app.isPackaged
+  ? (process.argv[2] || null)
+  : (process.argv[3] || null);
+
+// Config de IA repassada pelo Qenna Writer nesta sessão (lida uma vez do
+// arquivo de handoff, que é apagado logo em seguida). null se o Qenna não
+// tinha nenhuma key configurada ou não foi ele quem abriu o app.
+let passedAiConfig = null;
+
+const localAiSettingsPath = path.join(app.getPath("userData"), "ai-settings.json");
+
+// Lê o handoff de config de IA do Qenna Writer (se houver) e apaga o arquivo
+// na hora — a secret não deve sobreviver além desse instante em disco.
+if (aiConfigPathArg) {
+  try {
+    const fsSync = require("node:fs");
+    const raw = fsSync.readFileSync(aiConfigPathArg, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.apiKey === "string" && parsed.apiKey.trim()) {
+      passedAiConfig = {
+        apiKey: parsed.apiKey.trim(),
+        baseUrl: (parsed.baseUrl || "https://api.openai.com/v1").trim(),
+        model: (parsed.model || "gpt-4o-mini").trim(),
+      };
+    }
+    fsSync.unlinkSync(aiConfigPathArg);
+  } catch {}
+}
+
 let mainWindow = null;
 
 function createWindow() {
@@ -145,13 +178,70 @@ ipcMain.handle("cover:getMiraFileUrl", (_event, absPath) => {
   }
 });
 
-ipcMain.handle("cover:saveAndClose", async (_event, coverDataUrl, coverStateJson, projectRoot) => {
+ipcMain.handle("cover:getLocalAiSettings", async () => {
+  try {
+    const raw = await fsPromises.readFile(localAiSettingsPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return {
+      success: true,
+      apiKey: parsed.apiKey || "",
+      baseUrl: parsed.baseUrl || "",
+      model: parsed.model || "",
+    };
+  } catch {
+    return { success: true, apiKey: "", baseUrl: "", model: "" };
+  }
+});
+
+ipcMain.handle("cover:setLocalAiSettings", async (_event, settings) => {
+  try {
+    const payload = {
+      apiKey: String(settings?.apiKey || "").trim(),
+      baseUrl: String(settings?.baseUrl || "").trim(),
+      model: String(settings?.model || "").trim(),
+    };
+    await fsPromises.mkdir(path.dirname(localAiSettingsPath), { recursive: true });
+    await fsPromises.writeFile(localAiSettingsPath, JSON.stringify(payload, null, 2), "utf8");
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle("cover:getEffectiveAiConfig", async () => {
+  try {
+    const raw = await fsPromises.readFile(localAiSettingsPath, "utf8");
+    const local = JSON.parse(raw);
+    if (local.apiKey && local.apiKey.trim()) {
+      return {
+        success: true,
+        apiKey: local.apiKey.trim(),
+        baseUrl: local.baseUrl?.trim() || "https://api.openai.com/v1",
+        model: local.model?.trim() || "gpt-4o-mini",
+        source: "local",
+      };
+    }
+  } catch {}
+
+  if (passedAiConfig) {
+    return { success: true, ...passedAiConfig, source: "qenna" };
+  }
+
+  return { success: true, apiKey: "", baseUrl: "", model: "", source: null };
+});
+
+ipcMain.handle("cover:saveAndClose", async (_event, coverDataUrl, coverStateJson, projectRoot, coverBgDataUrl) => {
   try {
     if (!projectRoot) throw new Error("projectRoot not provided");
     const coverJpgPath = path.join(projectRoot, "cover.jpg");
     const base64Data = coverDataUrl.replace(/^data:image\/\w+;base64,/, "");
     const buffer = Buffer.from(base64Data, "base64");
     await fsPromises.writeFile(coverJpgPath, buffer);
+    if (coverBgDataUrl) {
+      const coverBgPath = path.join(projectRoot, "cover-bg.jpg");
+      const bgBase64 = coverBgDataUrl.replace(/^data:image\/\w+;base64,/, "");
+      await fsPromises.writeFile(coverBgPath, Buffer.from(bgBase64, "base64"));
+    }
     if (coverStateJson) {
       const stateFilePath = path.join(projectRoot, "cover-state.json");
       await fsPromises.writeFile(stateFilePath, coverStateJson, "utf8");

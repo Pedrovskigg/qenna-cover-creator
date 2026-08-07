@@ -612,3 +612,47 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 
 /* ── Misc ── */
 .muted { color: var(--ui-muted, rgba(255,255,255,0.4)); font-size: 12px; }
+
+/* ── AI cover generation ── */
+.ccBtnPrimary {
+  background: var(--ui-accent,#6ea8fe);
+  border: none;
+  color: #fff;
+  border-radius: 8px;
+  padding: 7px 20px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.ccBtnPrimary:hover { filter: brightness(1.1); }
+.ccBtnPrimary:disabled { opacity: 0.55; cursor: not-allowed; filter: none; }
+.ccAiHint { font-size: 11px; color: var(--ui-muted, rgba(255,255,255,0.5)); line-height: 1.4; }
+.ccAiHintLink { background: none; border: none; padding: 0; color: var(--ui-accent,#6ea8fe); font-size: inherit; cursor: pointer; text-decoration: underline; }
+.ccAiError { font-size: 11px; color: #f87171; line-height: 1.4; }
+.ccAiAdvancedToggle { background: none; border: none; padding: 0; color: var(--ui-muted, rgba(255,255,255,0.5)); font-size: 11px; cursor: pointer; text-decoration: underline; text-align: left; }
+
+.ccAiSettingsOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ccAiSettingsBox {
+  width: 100%;
+  max-width: 340px;
+  background: var(--ui-menu, #1e1e22);
+  border: 1px solid rgba(255,255,255,0.10);
+  color: var(--ui-text, #eaeaea);
+  border-radius: 12px;
+  padding: 16px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.3);
+}
+.ccAiSettingsField { display: flex; flex-direction: column; gap: 4px; }
+.ccAiSettingsField label { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ui-muted, rgba(255,255,255,0.4)); }

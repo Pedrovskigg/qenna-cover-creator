@@ -5,3 +5,4 @@ electron/probe.cjs
 *.log
 .DS_Store
 Thumbs.db
+cover-version.txt

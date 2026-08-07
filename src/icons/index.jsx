@@ -118,3 +118,24 @@ export const IconImage = ({ size = 16 }) => (
     <circle cx="9" cy="9" r="1.2" fill="currentColor" stroke="none" />
   </IconBase>
 );
+
+export const IconSparkle = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <path d="M12 4l1.6 4.4L18 10l-4.4 1.6L12 16l-1.6-4.4L6 10l4.4-1.6z" />
+    <path d="M19 15l0.8 2.2L22 18l-2.2 0.8L19 21l-0.8-2.2L16 18l2.2-0.8z" />
+  </IconBase>
+);
+
+export const IconSettings = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 3v2.4" />
+    <path d="M12 18.6V21" />
+    <path d="M4.9 4.9l1.7 1.7" />
+    <path d="M17.4 17.4l1.7 1.7" />
+    <path d="M3 12h2.4" />
+    <path d="M18.6 12H21" />
+    <path d="M4.9 19.1l1.7-1.7" />
+    <path d="M17.4 6.6l1.7-1.7" />
+  </IconBase>
+);

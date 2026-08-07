@@ -170,7 +170,7 @@ ipcMain.handle("cover:getMiraFileUrl", (_event, absPath) => {
  * e grava cover-state.json, depois fecha o app.
  * Retorna { success, error? } — o caller pode mostrar erro se necessário.
  */
-ipcMain.handle("cover:saveAndClose", async (_event, coverDataUrl, coverStateJson, projectRoot) => {
+ipcMain.handle("cover:saveAndClose", async (_event, coverDataUrl, coverStateJson, projectRoot, coverBgDataUrl) => {
   try {
     if (!projectRoot) throw new Error("projectRoot não fornecido");
 
@@ -179,6 +179,13 @@ ipcMain.handle("cover:saveAndClose", async (_event, coverDataUrl, coverStateJson
     const base64Data = coverDataUrl.replace(/^data:image\/\w+;base64,/, "");
     const buffer = Buffer.from(base64Data, "base64");
     await fsPromises.writeFile(coverJpgPath, buffer);
+
+    // Gravar cover-bg.jpg (fundo sem texto, pra textura de lombada no Qenna)
+    if (coverBgDataUrl) {
+      const coverBgPath = path.join(projectRoot, "cover-bg.jpg");
+      const bgBase64 = coverBgDataUrl.replace(/^data:image\/\w+;base64,/, "");
+      await fsPromises.writeFile(coverBgPath, Buffer.from(bgBase64, "base64"));
+    }
 
     // Gravar cover-state.json (estado editável)
     if (coverStateJson) {

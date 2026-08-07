@@ -40,6 +40,9 @@
       "target": [
         { "target": "portable", "arch": ["x64"] }
       ]
+    },
+    "portable": {
+      "artifactName": "Mira Cover.exe"
     }
   }
 }
