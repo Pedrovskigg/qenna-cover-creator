@@ -178,27 +178,54 @@ ipcMain.handle("cover:getMiraFileUrl", (_event, absPath) => {
   }
 });
 
+// Aceita tanto o formato antigo (achatado, só OpenAI) quanto o novo (por
+// provedor), pra não perder a key que o usuário já tinha salvo antes da
+// gente adicionar suporte a múltiplos provedores.
+function normalizeLocalAiSettings(parsed) {
+  if (parsed && typeof parsed.provider === "string") {
+    return {
+      provider: parsed.provider,
+      openai: {
+        apiKey: parsed.openai?.apiKey || "",
+        baseUrl: parsed.openai?.baseUrl || "",
+        model: parsed.openai?.model || "",
+      },
+      gemini: {
+        apiKey: parsed.gemini?.apiKey || "",
+        model: parsed.gemini?.model || "",
+      },
+    };
+  }
+  // Formato antigo: { apiKey, baseUrl, model } era sempre OpenAI.
+  return {
+    provider: "openai",
+    openai: { apiKey: parsed?.apiKey || "", baseUrl: parsed?.baseUrl || "", model: parsed?.model || "" },
+    gemini: { apiKey: "", model: "" },
+  };
+}
+
 ipcMain.handle("cover:getLocalAiSettings", async () => {
   try {
     const raw = await fsPromises.readFile(localAiSettingsPath, "utf8");
-    const parsed = JSON.parse(raw);
-    return {
-      success: true,
-      apiKey: parsed.apiKey || "",
-      baseUrl: parsed.baseUrl || "",
-      model: parsed.model || "",
-    };
+    return { success: true, ...normalizeLocalAiSettings(JSON.parse(raw)) };
   } catch {
-    return { success: true, apiKey: "", baseUrl: "", model: "" };
+    return { success: true, ...normalizeLocalAiSettings(null) };
   }
 });
 
 ipcMain.handle("cover:setLocalAiSettings", async (_event, settings) => {
   try {
     const payload = {
-      apiKey: String(settings?.apiKey || "").trim(),
-      baseUrl: String(settings?.baseUrl || "").trim(),
-      model: String(settings?.model || "").trim(),
+      provider: settings?.provider === "gemini" ? "gemini" : "openai",
+      openai: {
+        apiKey: String(settings?.openai?.apiKey || "").trim(),
+        baseUrl: String(settings?.openai?.baseUrl || "").trim(),
+        model: String(settings?.openai?.model || "").trim(),
+      },
+      gemini: {
+        apiKey: String(settings?.gemini?.apiKey || "").trim(),
+        model: String(settings?.gemini?.model || "").trim(),
+      },
     };
     await fsPromises.mkdir(path.dirname(localAiSettingsPath), { recursive: true });
     await fsPromises.writeFile(localAiSettingsPath, JSON.stringify(payload, null, 2), "utf8");
@@ -211,23 +238,41 @@ ipcMain.handle("cover:setLocalAiSettings", async (_event, settings) => {
 ipcMain.handle("cover:getEffectiveAiConfig", async () => {
   try {
     const raw = await fsPromises.readFile(localAiSettingsPath, "utf8");
-    const local = JSON.parse(raw);
-    if (local.apiKey && local.apiKey.trim()) {
+    const local = normalizeLocalAiSettings(JSON.parse(raw));
+
+    if (local.provider === "gemini") {
+      // Gemini escolhido como provedor ativo: só existe a key local (o
+      // Qenna Writer nunca repassa uma key do Gemini) — sem key aqui,
+      // não faz sentido cair pra trás pro OpenAI do Qenna sem avisar.
+      if (local.gemini.apiKey) {
+        return {
+          success: true,
+          provider: "gemini",
+          apiKey: local.gemini.apiKey,
+          model: local.gemini.model || "gemini-2.5-flash",
+          source: "local",
+        };
+      }
+      return { success: true, provider: "gemini", apiKey: "", source: null };
+    }
+
+    if (local.openai.apiKey) {
       return {
         success: true,
-        apiKey: local.apiKey.trim(),
-        baseUrl: local.baseUrl?.trim() || "https://api.openai.com/v1",
-        model: local.model?.trim() || "gpt-4o-mini",
+        provider: "openai",
+        apiKey: local.openai.apiKey,
+        baseUrl: local.openai.baseUrl || "https://api.openai.com/v1",
+        model: local.openai.model || "gpt-4o-mini",
         source: "local",
       };
     }
   } catch {}
 
   if (passedAiConfig) {
-    return { success: true, ...passedAiConfig, source: "qenna" };
+    return { success: true, provider: "openai", ...passedAiConfig, source: "qenna" };
   }
 
-  return { success: true, apiKey: "", baseUrl: "", model: "", source: null };
+  return { success: true, provider: "openai", apiKey: "", source: null };
 });
 
 ipcMain.handle("cover:saveAndClose", async (_event, coverDataUrl, coverStateJson, projectRoot, coverBgDataUrl) => {

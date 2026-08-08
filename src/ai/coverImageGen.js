@@ -3,9 +3,11 @@ import { coverStylePromptFragment } from "./coverStylePresets";
 // URL real da OpenAI para geração de imagem — sempre fixa aqui, mesmo que o
 // usuário configure um baseUrl de proxy pro passo de chat completion (o
 // proxy pode não ter esse endpoint). Mesma decisão do Qenna Writer.
-const IMAGE_GENERATIONS_URL = "https://api.openai.com/v1/images/generations";
+const OPENAI_IMAGE_GENERATIONS_URL = "https://api.openai.com/v1/images/generations";
 
-const PROMPT_ENGINEERING_SYSTEM_PROMPT = `You are the Art Director for this book cover design tool — you turn a short, informal request from an author into ONE dense, specific image-generation prompt, ready to send straight to an image model (GPT Image). Your job is not to repeat what was said: it's to build a complete art direction that fits the request and works as book cover key art.
+const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
+
+const PROMPT_ENGINEERING_SYSTEM_PROMPT = `You are the Art Director for this book cover design tool — you turn a short, informal request from an author into ONE dense, specific image-generation prompt, ready to send straight to an image model. Your job is not to repeat what was said: it's to build a complete art direction that fits the request and works as book cover key art.
 
 ## Book cover constraints (always apply)
 This image will be used as the BACKGROUND of a book cover — the title and author name will be overlaid on top of it afterward, usually near the top and/or bottom of the frame. Compose the scene so the top and bottom bands stay visually calm enough for text to sit on top of (avoid tiny critical details or business right at the very top/bottom edges); the main subject and visual interest should read clearly at a glance, like real book cover key art, not a busy poster. Always use a vertical/portrait composition.
@@ -47,11 +49,9 @@ async function extractApiError(res) {
   }
 }
 
-/**
- * Passo 1: engenharia de prompt via chat completion.
- * Retorna o prompt de imagem final (string).
- */
-export async function engineerCoverPrompt({ apiKey, baseUrl, model, description, stylePreset, title, author }) {
+// ── OpenAI ───────────────────────────────────────────────────────────────
+
+async function engineerCoverPromptOpenAI({ apiKey, baseUrl, model, description, stylePreset, title, author }) {
   const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
     method: "POST",
     headers: {
@@ -67,9 +67,7 @@ export async function engineerCoverPrompt({ apiKey, baseUrl, model, description,
     }),
   });
 
-  if (!res.ok) {
-    throw new Error(await extractApiError(res));
-  }
+  if (!res.ok) throw new Error(await extractApiError(res));
 
   const data = await res.json();
   const prompt = data?.choices?.[0]?.message?.content?.trim();
@@ -77,11 +75,8 @@ export async function engineerCoverPrompt({ apiKey, baseUrl, model, description,
   return prompt;
 }
 
-/**
- * Passo 2: geração da imagem em si. Retorna uma data URL (image/png).
- */
-export async function generateCoverImage({ apiKey, prompt, model, quality }) {
-  const res = await fetch(IMAGE_GENERATIONS_URL, {
+async function generateCoverImageOpenAI({ apiKey, prompt, model, quality }) {
+  const res = await fetch(OPENAI_IMAGE_GENERATIONS_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -96,9 +91,7 @@ export async function generateCoverImage({ apiKey, prompt, model, quality }) {
     }),
   });
 
-  if (!res.ok) {
-    throw new Error(await extractApiError(res));
-  }
+  if (!res.ok) throw new Error(await extractApiError(res));
 
   const data = await res.json();
   const b64 = data?.data?.[0]?.b64_json;
@@ -106,17 +99,66 @@ export async function generateCoverImage({ apiKey, prompt, model, quality }) {
   return `data:image/png;base64,${b64}`;
 }
 
-/** Roda os dois passos em sequência. Retorna { prompt, dataUrl }. */
-export async function generateCoverArt({ apiKey, baseUrl, chatModel, imageModel, quality, description, stylePreset, title, author }) {
-  const prompt = await engineerCoverPrompt({
-    apiKey,
-    baseUrl,
-    model: chatModel,
-    description,
-    stylePreset,
-    title,
-    author,
+// ── Gemini ("nano banana") ──────────────────────────────────────────────
+// Auth via header x-goog-api-key (não Bearer). Sem endpoint de chat
+// separado — tudo passa por generateContent, com systemInstruction no
+// lugar da mensagem "system". A proporção de retrato é pedida via
+// generationConfig.imageConfig.aspectRatio, sem parâmetro de "quality".
+
+async function engineerCoverPromptGemini({ apiKey, model, description, stylePreset, title, author }) {
+  const res = await fetch(`${GEMINI_API_BASE}/models/${model}:generateContent`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey,
+    },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: PROMPT_ENGINEERING_SYSTEM_PROMPT }] },
+      contents: [{ role: "user", parts: [{ text: buildUserContent({ description, stylePreset, title, author }) }] }],
+    }),
   });
-  const dataUrl = await generateCoverImage({ apiKey, prompt, model: imageModel, quality });
+
+  if (!res.ok) throw new Error(await extractApiError(res));
+
+  const data = await res.json();
+  const prompt = data?.candidates?.[0]?.content?.parts?.find((p) => p.text)?.text?.trim();
+  if (!prompt) throw new Error("The prompt-engineering step returned an empty response.");
+  return prompt;
+}
+
+async function generateCoverImageGemini({ apiKey, prompt, model }) {
+  const res = await fetch(`${GEMINI_API_BASE}/models/${model}:generateContent`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey,
+    },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseModalities: ["IMAGE"],
+        imageConfig: { aspectRatio: "2:3" },
+      },
+    }),
+  });
+
+  if (!res.ok) throw new Error(await extractApiError(res));
+
+  const data = await res.json();
+  const imagePart = data?.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+  if (!imagePart) throw new Error("The image API response did not include image data.");
+  const { mimeType, data: b64 } = imagePart.inlineData;
+  return `data:${mimeType || "image/png"};base64,${b64}`;
+}
+
+/** Roda os dois passos em sequência para o provedor escolhido. Retorna { prompt, dataUrl }. */
+export async function generateCoverArt({ provider, apiKey, baseUrl, chatModel, imageModel, quality, description, stylePreset, title, author }) {
+  if (provider === "gemini") {
+    const prompt = await engineerCoverPromptGemini({ apiKey, model: chatModel, description, stylePreset, title, author });
+    const dataUrl = await generateCoverImageGemini({ apiKey, prompt, model: imageModel });
+    return { prompt, dataUrl };
+  }
+  const prompt = await engineerCoverPromptOpenAI({ apiKey, baseUrl, model: chatModel, description, stylePreset, title, author });
+  const dataUrl = await generateCoverImageOpenAI({ apiKey, prompt, model: imageModel, quality });
   return { prompt, dataUrl };
 }

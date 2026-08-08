@@ -1263,7 +1263,7 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
   const [aiConfig, setAiConfig] = useState(null);
   const [description, setDescription] = useState("");
   const [stylePreset, setStylePreset] = useState("default");
-  const [imageModel, setImageModel] = useState("gpt-image-1-mini");
+  const [openaiImageModel, setOpenaiImageModel] = useState("gpt-image-1-mini");
   const [quality, setQuality] = useState("medium");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -1295,6 +1295,7 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
   }, []);
 
   const hasKey = !!aiConfig?.apiKey;
+  const isGemini = aiConfig?.provider === "gemini";
 
   const handleGenerate = useCallback(async () => {
     if (!hasKey || !description.trim() || loading) return;
@@ -1302,10 +1303,11 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
     setError(null);
     try {
       const { dataUrl } = await generateCoverArt({
+        provider: aiConfig.provider,
         apiKey: aiConfig.apiKey,
         baseUrl: aiConfig.baseUrl,
         chatModel: aiConfig.model,
-        imageModel,
+        imageModel: isGemini ? "gemini-2.5-flash-image" : openaiImageModel,
         quality,
         description,
         stylePreset,
@@ -1319,7 +1321,7 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
     } finally {
       setLoading(false);
     }
-  }, [hasKey, description, loading, aiConfig, imageModel, quality, stylePreset, title, author, commit, onDone]);
+  }, [hasKey, description, loading, aiConfig, isGemini, openaiImageModel, quality, stylePreset, title, author, commit, onDone]);
 
   return (
     <div ref={popoverRef} className="ccPopover"
@@ -1336,7 +1338,9 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
       )}
       {hasKey && (
         <div className="ccAiHint">
-          {aiConfig.source === "qenna" ? "Using the API key from Qenna Writer." : "Using your Cover Creator API key."}
+          {aiConfig.source === "qenna"
+            ? "Using the API key from Qenna Writer (OpenAI)."
+            : `Using your Cover Creator API key (${isGemini ? "Gemini" : "OpenAI"}).`}
         </div>
       )}
 
@@ -1356,23 +1360,27 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
             {COVER_STYLE_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
           </select>
         </div>
-        <div className="ccField" style={{ alignItems: "stretch" }}>
-          <span className="ccFieldLabel">Quality</span>
-          <select className="ccBevelSelect" value={quality} onChange={(e) => setQuality(e.target.value)}>
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-          </select>
-        </div>
+        {!isGemini && (
+          <div className="ccField" style={{ alignItems: "stretch" }}>
+            <span className="ccFieldLabel">Quality</span>
+            <select className="ccBevelSelect" value={quality} onChange={(e) => setQuality(e.target.value)}>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </div>
+        )}
       </div>
 
-      <div className="ccField" style={{ alignItems: "stretch" }}>
-        <span className="ccFieldLabel">Model</span>
-        <select className="ccBevelSelect" value={imageModel} onChange={(e) => setImageModel(e.target.value)}>
-          <option value="gpt-image-1-mini">GPT Image 1 Mini</option>
-          <option value="gpt-image-1">GPT Image 1</option>
-        </select>
-      </div>
+      {!isGemini && (
+        <div className="ccField" style={{ alignItems: "stretch" }}>
+          <span className="ccFieldLabel">Model</span>
+          <select className="ccBevelSelect" value={openaiImageModel} onChange={(e) => setOpenaiImageModel(e.target.value)}>
+            <option value="gpt-image-1-mini">GPT Image 1 Mini</option>
+            <option value="gpt-image-1">GPT Image 1</option>
+          </select>
+        </div>
+      )}
 
       {error && <div className="ccAiError">{error}</div>}
 
@@ -1386,9 +1394,12 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
 }
 
 function AiSettingsModal({ onClose }) {
-  const [apiKey, setApiKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [model, setModel] = useState("");
+  const [provider, setProvider] = useState("openai");
+  const [openaiApiKey, setOpenaiApiKey] = useState("");
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState("");
+  const [openaiModel, setOpenaiModel] = useState("");
+  const [geminiApiKey, setGeminiApiKey] = useState("");
+  const [geminiModel, setGeminiModel] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [source, setSource] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -1402,9 +1413,12 @@ function AiSettingsModal({ onClose }) {
       ]);
       if (cancelled) return;
       if (local?.success) {
-        setApiKey(local.apiKey || "");
-        setBaseUrl(local.baseUrl || "");
-        setModel(local.model || "");
+        setProvider(local.provider === "gemini" ? "gemini" : "openai");
+        setOpenaiApiKey(local.openai?.apiKey || "");
+        setOpenaiBaseUrl(local.openai?.baseUrl || "");
+        setOpenaiModel(local.openai?.model || "");
+        setGeminiApiKey(local.gemini?.apiKey || "");
+        setGeminiModel(local.gemini?.model || "");
       }
       if (effective?.success) setSource(effective.source);
     })();
@@ -1414,12 +1428,18 @@ function AiSettingsModal({ onClose }) {
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
-      await window.miraCover?.setLocalAiSettings?.({ apiKey: apiKey.trim(), baseUrl: baseUrl.trim(), model: model.trim() });
+      await window.miraCover?.setLocalAiSettings?.({
+        provider,
+        openai: { apiKey: openaiApiKey.trim(), baseUrl: openaiBaseUrl.trim(), model: openaiModel.trim() },
+        gemini: { apiKey: geminiApiKey.trim(), model: geminiModel.trim() },
+      });
       onClose();
     } finally {
       setSaving(false);
     }
-  }, [apiKey, baseUrl, model, onClose]);
+  }, [provider, openaiApiKey, openaiBaseUrl, openaiModel, geminiApiKey, geminiModel, onClose]);
+
+  const isGemini = provider === "gemini";
 
   return (
     <div className="ccAiSettingsOverlay" onMouseDown={onClose}>
@@ -1429,30 +1449,59 @@ function AiSettingsModal({ onClose }) {
           <button className="coverCreatorCloseBtn" onClick={onClose} title="Close"><IconX size={14} /></button>
         </div>
 
-        {!apiKey && source === "qenna" && (
+        <div className="ccAiSettingsField">
+          <label>Provider</label>
+          <select className="ccBevelSelect" style={{ width: "100%" }} value={provider}
+            onChange={(e) => { setProvider(e.target.value); setShowAdvanced(false); }}>
+            <option value="openai">OpenAI (GPT Image)</option>
+            <option value="gemini">Google Gemini (Nano Banana)</option>
+          </select>
+        </div>
+
+        {!isGemini && !openaiApiKey && source === "qenna" && (
           <div className="ccAiHint">Currently using the API key configured in Qenna Writer. Set your own below to override it.</div>
         )}
 
-        <div className="ccAiSettingsField">
-          <label>API key</label>
-          <input className="modalInput" type="password" placeholder="sk-…" value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)} />
-        </div>
-
-        {!showAdvanced ? (
-          <button className="ccAiAdvancedToggle" onClick={() => setShowAdvanced(true)}>Advanced (base URL / model)</button>
+        {isGemini ? (
+          <>
+            <div className="ccAiSettingsField">
+              <label>Gemini API key</label>
+              <input className="modalInput" type="password" placeholder="AIza…" value={geminiApiKey}
+                onChange={(e) => setGeminiApiKey(e.target.value)} />
+            </div>
+            {!showAdvanced ? (
+              <button className="ccAiAdvancedToggle" onClick={() => setShowAdvanced(true)}>Advanced (model)</button>
+            ) : (
+              <div className="ccAiSettingsField">
+                <label>Chat model (prompt engineering)</label>
+                <input className="modalInput" type="text" placeholder="gemini-2.5-flash" value={geminiModel}
+                  onChange={(e) => setGeminiModel(e.target.value)} />
+              </div>
+            )}
+          </>
         ) : (
           <>
             <div className="ccAiSettingsField">
-              <label>Base URL</label>
-              <input className="modalInput" type="text" placeholder="https://api.openai.com/v1" value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)} />
+              <label>OpenAI API key</label>
+              <input className="modalInput" type="password" placeholder="sk-…" value={openaiApiKey}
+                onChange={(e) => setOpenaiApiKey(e.target.value)} />
             </div>
-            <div className="ccAiSettingsField">
-              <label>Chat model (prompt engineering)</label>
-              <input className="modalInput" type="text" placeholder="gpt-4o-mini" value={model}
-                onChange={(e) => setModel(e.target.value)} />
-            </div>
+            {!showAdvanced ? (
+              <button className="ccAiAdvancedToggle" onClick={() => setShowAdvanced(true)}>Advanced (base URL / model)</button>
+            ) : (
+              <>
+                <div className="ccAiSettingsField">
+                  <label>Base URL</label>
+                  <input className="modalInput" type="text" placeholder="https://api.openai.com/v1" value={openaiBaseUrl}
+                    onChange={(e) => setOpenaiBaseUrl(e.target.value)} />
+                </div>
+                <div className="ccAiSettingsField">
+                  <label>Chat model (prompt engineering)</label>
+                  <input className="modalInput" type="text" placeholder="gpt-4o-mini" value={openaiModel}
+                    onChange={(e) => setOpenaiModel(e.target.value)} />
+                </div>
+              </>
+            )}
           </>
         )}
 
