@@ -35,7 +35,13 @@ export function makeCoverTextLayer(partial = {}) {
     angle: typeof partial.angle === "number"
       ? Math.max(-180, Math.min(180, partial.angle))
       : 0,
+    order: typeof partial.order === "number" ? partial.order : 0,
   };
+}
+
+function nextLayerOrder(state) {
+  const all = [...(state?.textLayers || []), ...(state?.shapeLayers || [])];
+  return all.reduce((max, l) => Math.max(max, Number(l.order) || 0), 0) + 1;
 }
 
 export function buildDefaultCoverTextLayers(data = {}) {
@@ -105,6 +111,7 @@ export function addCustomCoverLayer(state) {
     fontSize: Math.max(14, Math.round((Number(state.titleFontSize) || 72) * 0.5)),
     color: state.fontColor || "#ffffff",
     shadowColor: "#000000", strokeColor: "#000000", glowColor: "#ffffff",
+    order: nextLayerOrder(state),
   });
   return {
     ...state,
@@ -120,6 +127,7 @@ export function addSymbolCoverLayer(state) {
     fontFamily: "serif", fontSize: 80,
     color: state.fontColor || "#ffffff",
     shadowColor: "#000000", strokeColor: "#000000", glowColor: "#ffffff",
+    order: nextLayerOrder(state),
   });
   return {
     ...state,

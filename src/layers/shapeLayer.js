@@ -30,12 +30,18 @@ export function makeCoverShapeLayer(partial = {}) {
     bevelStrength: typeof partial.bevelStrength === "number"
       ? Math.max(1, Math.min(10, partial.bevelStrength))
       : 5,
+    order: typeof partial.order === "number" ? partial.order : 0,
   };
+}
+
+function nextLayerOrder(state) {
+  const all = [...(state?.textLayers || []), ...(state?.shapeLayers || [])];
+  return all.reduce((max, l) => Math.max(max, Number(l.order) || 0), 0) + 1;
 }
 
 export function addShapeCoverLayer(state, shapeType = "rect") {
   if (!state) return state;
-  const layer = makeCoverShapeLayer({ shape: shapeType, y: 0.5 });
+  const layer = makeCoverShapeLayer({ shape: shapeType, y: 0.5, order: nextLayerOrder(state) });
   return {
     ...state,
     shapeLayers: [...(state.shapeLayers || []), layer],

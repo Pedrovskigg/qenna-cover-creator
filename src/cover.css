@@ -562,6 +562,10 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   padding: 2px 4px;
   border: 1px dashed transparent;
 }
+.coverCreatorTextHandle.isActive {
+  border-color: var(--ui-accent, #6ea8fe);
+  z-index: 2;
+}
 .coverCreatorShapeHandle {
   position: absolute;
   transform: translate(-50%, -50%);
@@ -590,8 +594,43 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 .ccShapeResizeHandle--tr { top: -4px;    right: -4px;   cursor: nesw-resize; }
 .ccShapeResizeHandle--bl { bottom: -4px; left: -4px;    cursor: nesw-resize; }
 .ccShapeResizeHandle--br { bottom: -4px; right: -4px;   cursor: nwse-resize; }
-.coverCenterGuideV { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #22c55e; z-index: 10; pointer-events: none; animation: coverGuideFlash 0.6s ease-out forwards; }
-.coverCenterGuideH { position: absolute; top: 50%; left: 0; right: 0; height: 1px; background: #22c55e; z-index: 10; pointer-events: none; animation: coverGuideFlash 0.6s ease-out forwards; }
+
+/* Alça de resize de texto (canto inferior-direito, escala a fonte) */
+.ccTextResizeHandle {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 8px;
+  height: 8px;
+  background: #fff;
+  border: 1.5px solid var(--ui-accent, #6ea8fe);
+  border-radius: 2px;
+  z-index: 10;
+  pointer-events: auto;
+  box-sizing: border-box;
+  cursor: nwse-resize;
+}
+
+/* Alça de rotação (texto e forma), flutua acima da caixa */
+.ccRotateHandle {
+  position: absolute;
+  top: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 9px;
+  height: 9px;
+  background: #fff;
+  border: 1.5px solid var(--ui-accent, #6ea8fe);
+  border-radius: 50%;
+  z-index: 10;
+  pointer-events: auto;
+  box-sizing: border-box;
+  cursor: grab;
+}
+.ccRotateHandle:active { cursor: grabbing; }
+
+.coverCenterGuideV { position: absolute; top: 0; bottom: 0; width: 1px; background: #22c55e; z-index: 10; pointer-events: none; animation: coverGuideFlash 0.6s ease-out forwards; }
+.coverCenterGuideH { position: absolute; left: 0; right: 0; height: 1px; background: #22c55e; z-index: 10; pointer-events: none; animation: coverGuideFlash 0.6s ease-out forwards; }
 @keyframes coverGuideFlash { 0%{ opacity:1; } 70%{ opacity:1; } 100%{ opacity:0; } }
 
 /* ── CoverCropper ── */

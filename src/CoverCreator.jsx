@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import CoverCropper from "./CoverCropper.jsx";
 import CcKnob from "./ui/CcKnob.jsx";
-import { IconX, IconFilter, IconMaximize, IconDownload, IconBevel, IconShadow, IconGlow, IconStroke, IconTransform, IconBorderFrame, IconSave, IconTrash, IconImage, IconSettings, IconSparkle } from "./icons/index.jsx";
+import { IconX, IconFilter, IconMaximize, IconDownload, IconBevel, IconShadow, IconGlow, IconStroke, IconTransform, IconBorderFrame, IconSave, IconTrash, IconImage, IconSettings, IconSparkle, IconUndo, IconRedo, IconCopy, IconLayersOrder } from "./icons/index.jsx";
 import { COVER_FONT_OPTIONS } from "./data/fonts.js";
 import { COVER_EMOJI_PICKS } from "./data/symbols.js";
 import { COVER_STYLE_PRESETS } from "./ai/coverStylePresets.js";
@@ -10,7 +10,7 @@ import { clamp01 } from "./utils/math.js";
 import { defaultBgFilter, buildImageFilterString } from "./canvas/filters.js";
 import { makeCoverTextLayer, applyCoverLayerPatch, addCustomCoverLayer, addSymbolCoverLayer } from "./layers/textLayer.js";
 import { makeCoverShapeLayer, applyCoverShapePatch, addShapeCoverLayer } from "./layers/shapeLayer.js";
-import { ensureCoverCreatorState, createCoverCreatorState, serializeCoverState, loadCoverStateFromProject } from "./layers/state.js";
+import { ensureCoverCreatorState, createCoverCreatorState, serializeCoverState, loadCoverStateFromProject, reorderCoverLayer, duplicateCoverLayer } from "./layers/state.js";
 import { renderCoverDataUrl, getCoverImageDraw } from "./canvas/render.js";
 import { buildFontString, wrapText } from "./canvas/text.js";
 
@@ -34,6 +34,11 @@ export default function CoverCreator() {
   const [updateInfo, setUpdateInfo] = useState(null);
   const bgInputRef = useRef(null);
   const previewRafRef = useRef(0);
+  // Histórico de desfazer/refazer. Edições seguidas (arrastar, girar um knob,
+  // digitar) chegam aqui em rajadas de dezenas de chamadas por segundo — só
+  // empilha um novo passo quando já passou tempo suficiente desde o último,
+  // agrupando cada gesto do usuário em uma única entrada de undo.
+  const historyRef = useRef({ past: [], future: [], lastTime: 0 });
 
   // Checa atualização do Cover Creator ao abrir
   useEffect(() => {
@@ -75,8 +80,40 @@ export default function CoverCreator() {
   const handleChange = useCallback((updater) => {
     setCreator((prev) => {
       const base = ensureCoverCreatorState(prev);
-      const next = typeof updater === "function" ? updater(base) : updater;
-      return ensureCoverCreatorState(next);
+      const next = ensureCoverCreatorState(typeof updater === "function" ? updater(base) : updater);
+      if (next !== base && base) {
+        const h = historyRef.current;
+        const now = Date.now();
+        if (now - h.lastTime > 500) {
+          h.past.push(base);
+          if (h.past.length > 100) h.past.shift();
+          h.future = [];
+        }
+        h.lastTime = now;
+      }
+      return next;
+    });
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    const h = historyRef.current;
+    if (!h.past.length) return;
+    setCreator((current) => {
+      const prevState = h.past.pop();
+      h.future.push(current);
+      h.lastTime = 0;
+      return ensureCoverCreatorState(prevState);
+    });
+  }, []);
+
+  const handleRedo = useCallback(() => {
+    const h = historyRef.current;
+    if (!h.future.length) return;
+    setCreator((current) => {
+      const nextState = h.future.pop();
+      h.past.push(current);
+      h.lastTime = 0;
+      return ensureCoverCreatorState(nextState);
     });
   }, []);
 
@@ -178,6 +215,8 @@ export default function CoverCreator() {
         onClose={handleClose}
         onSave={handleSave}
         onExport={handleExport}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
         bgInputRef={bgInputRef}
         saving={saving}
       />
@@ -187,7 +226,7 @@ export default function CoverCreator() {
 
 // ── Modal de edição ────────────────────────────────────────────────────────────
 
-function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExport, bgInputRef, saving }) {
+function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExport, onUndo, onRedo, bgInputRef, saving }) {
   const previewRef = useRef(null);
   const dragRef = useRef(null);
   const dragRafRef = useRef(0);
@@ -308,15 +347,21 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
     };
     commit((prev) => ({ ...prev, draggingText: true, draggingLayerId: layerId }));
     const SNAP = 0.015;
+    // Alinha com o centro do canvas e também com a posição de qualquer outra
+    // camada, não só o centro — assim dá pra centralizar um elemento em
+    // relação a outro, não só em relação à capa inteira.
+    const others = allL.filter((item) => item.id !== layerId);
+    const snapTargetsX = [0.5, ...others.map((item) => clamp01(item.x))];
+    const snapTargetsY = [0.5, ...others.map((item) => clamp01(item.y))];
     const onMove = (e) => {
       if (!dragRef.current || !previewRef.current) return;
       const b = previewRef.current.getBoundingClientRect();
       let x = clamp01(((e.clientX - b.left) - dragRef.current.dx) / b.width);
       let y = clamp01(((e.clientY - b.top) - dragRef.current.dy) / b.height);
-      if (Math.abs(x - 0.5) < SNAP) x = 0.5;
-      if (Math.abs(y - 0.5) < SNAP) y = 0.5;
-      const guide = Math.abs(x - 0.5) < SNAP && Math.abs(y - 0.5) < SNAP ? "xy"
-        : Math.abs(x - 0.5) < SNAP ? "x" : Math.abs(y - 0.5) < SNAP ? "y" : null;
+      let snappedX = null, snappedY = null;
+      for (const t of snapTargetsX) { if (Math.abs(x - t) < SNAP) { x = t; snappedX = t; break; } }
+      for (const t of snapTargetsY) { if (Math.abs(y - t) < SNAP) { y = t; snappedY = t; break; } }
+      const guide = snappedX != null || snappedY != null ? { x: snappedX, y: snappedY } : null;
       setCenterGuide(guide);
       if (centerGuideTimerRef.current) clearTimeout(centerGuideTimerRef.current);
       if (guide) centerGuideTimerRef.current = setTimeout(() => setCenterGuide(null), 600);
@@ -392,33 +437,127 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
     window.addEventListener("mouseup",   onUp);
   }, [commit, safeCreator]);
 
-  // Delete de camadas pelo teclado
+  // Rotação por arraste (texto e forma) — o handle fica preso ao topo da caixa
+  // do elemento, então o pivô é o centro do retângulo daquele handle.
+  const handleRotateMouseDown = useCallback((event, layerId, isShape) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const boxEl = event.currentTarget.parentElement;
+    if (!boxEl) return;
+    const box = boxEl.getBoundingClientRect();
+    const pivotX = box.left + box.width / 2;
+    const pivotY = box.top + box.height / 2;
+
+    const onMove = (e) => {
+      let deg = (Math.atan2(e.clientY - pivotY, e.clientX - pivotX) * 180) / Math.PI + 90;
+      if (deg > 180) deg -= 360;
+      if (deg < -180) deg += 360;
+      if (e.shiftKey) deg = Math.round(deg / 15) * 15;
+      commit((prev) => isShape
+        ? applyCoverShapePatch(prev, layerId, { angle: deg })
+        : applyCoverLayerPatch(prev, layerId, { angle: deg }));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [commit]);
+
+  // Resize de texto pelo canto — escala o tamanho da fonte proporcionalmente
+  // à distância do mouse até o canto oposto (âncora fixa).
+  const handleTextCornerMouseDown = useCallback((event, layerId) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const boxEl = event.currentTarget.parentElement;
+    if (!boxEl) return;
+    const box = boxEl.getBoundingClientRect();
+    const anchorX = box.left;
+    const anchorY = box.top;
+    const startDist = Math.hypot(box.width, box.height) || 1;
+    const current = ensureCoverCreatorState(safeCreator);
+    const layer = (current.textLayers || []).find((l) => l.id === layerId);
+    const startFontSize = Number(layer?.fontSize) || 56;
+
+    const onMove = (e) => {
+      const dist = Math.hypot(e.clientX - anchorX, e.clientY - anchorY);
+      const scale = Math.max(0.1, dist / startDist);
+      const nextSize = Math.round(Math.max(1, Math.min(800, startFontSize * scale)));
+      commit((prev) => applyCoverLayerPatch(prev, layerId, { fontSize: nextSize }));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [commit, safeCreator]);
+
+  // Atalhos de teclado: deletar, nudge com setas, desfazer/refazer, duplicar
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key !== "Delete" && e.key !== "Backspace") return;
       const tag = document.activeElement?.tagName?.toLowerCase();
-      if (tag === "input" || tag === "textarea" || tag === "select") return;
-      if (!safeCreator?.activeLayerId) return;
-      e.preventDefault();
-      commit((prev) => {
-        const id = prev.activeLayerId;
-        const textLayer = (prev.textLayers || []).find((l) => l.id === id);
-        if (textLayer) {
-          if (textLayer.role === "title" || textLayer.role === "author") return prev;
-          const next = (prev.textLayers || []).filter((l) => l.id !== id);
-          return { ...prev, textLayers: next, activeLayerId: next[0]?.id || (prev.shapeLayers || [])[0]?.id || null };
-        }
-        const shapeLayer = (prev.shapeLayers || []).find((l) => l.id === id);
-        if (shapeLayer) {
-          const next = (prev.shapeLayers || []).filter((l) => l.id !== id);
-          return { ...prev, shapeLayers: next, activeLayerId: (prev.textLayers || [])[0]?.id || next[0]?.id || null };
-        }
-        return prev;
-      });
+      const inField = tag === "input" || tag === "textarea" || tag === "select";
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !inField) {
+        e.preventDefault();
+        if (e.shiftKey) onRedo?.(); else onUndo?.();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y" && !inField) {
+        e.preventDefault();
+        onRedo?.();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d" && !inField) {
+        e.preventDefault();
+        if (safeCreator?.activeLayerId) commit((prev) => duplicateCoverLayer(prev, prev.activeLayerId));
+        return;
+      }
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        if (inField) return;
+        if (!safeCreator?.activeLayerId) return;
+        e.preventDefault();
+        commit((prev) => {
+          const id = prev.activeLayerId;
+          const textLayer = (prev.textLayers || []).find((l) => l.id === id);
+          if (textLayer) {
+            if (textLayer.role === "title" || textLayer.role === "author") return prev;
+            const next = (prev.textLayers || []).filter((l) => l.id !== id);
+            return { ...prev, textLayers: next, activeLayerId: next[0]?.id || (prev.shapeLayers || [])[0]?.id || null };
+          }
+          const shapeLayer = (prev.shapeLayers || []).find((l) => l.id === id);
+          if (shapeLayer) {
+            const next = (prev.shapeLayers || []).filter((l) => l.id !== id);
+            return { ...prev, shapeLayers: next, activeLayerId: (prev.textLayers || [])[0]?.id || next[0]?.id || null };
+          }
+          return prev;
+        });
+        return;
+      }
+
+      if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        if (inField) return;
+        if (!safeCreator?.activeLayerId) return;
+        e.preventDefault();
+        const step = e.shiftKey ? 0.02 : 0.003;
+        const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+        const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+        commit((prev) => {
+          const id = prev.activeLayerId;
+          const isShape = (prev.shapeLayers || []).some((l) => l.id === id);
+          const layer = (isShape ? prev.shapeLayers : prev.textLayers || []).find((l) => l.id === id);
+          if (!layer) return prev;
+          const patch = { x: clamp01((Number(layer.x) || 0.5) + dx), y: clamp01((Number(layer.y) || 0.5) + dy) };
+          return isShape ? applyCoverShapePatch(prev, id, patch) : applyCoverLayerPatch(prev, id, patch);
+        });
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [safeCreator?.activeLayerId, commit]);
+  }, [safeCreator?.activeLayerId, commit, onUndo, onRedo]);
 
   if (!safeCreator) return null;
   const bgFilter = safeCreator.bgFilter || defaultBgFilter();
@@ -432,6 +571,12 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
         <div className="coverCreatorHeader">
           <span className="coverCreatorTitle">Create cover</span>
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button className="coverCreatorCloseBtn" onClick={onUndo} title="Undo (Ctrl+Z)">
+              <IconUndo size={16} />
+            </button>
+            <button className="coverCreatorCloseBtn" onClick={onRedo} title="Redo (Ctrl+Shift+Z)">
+              <IconRedo size={16} />
+            </button>
             <button className="coverCreatorCloseBtn" onClick={() => setShowAiSettings(true)} title="AI settings">
               <IconSettings size={16} />
             </button>
@@ -481,8 +626,8 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                       showImage={false}
                     />
                   )}
-                  {(centerGuide === "x" || centerGuide === "xy") && <div className="coverCenterGuideV" />}
-                  {(centerGuide === "y" || centerGuide === "xy") && <div className="coverCenterGuideH" />}
+                  {centerGuide?.x != null && <div className="coverCenterGuideV" style={{ left: `${centerGuide.x * 100}%` }} />}
+                  {centerGuide?.y != null && <div className="coverCenterGuideH" style={{ top: `${centerGuide.y * 100}%` }} />}
 
                   {/* Handles de formas */}
                   {(safeCreator.shapeLayers || []).map((layer) => {
@@ -507,6 +652,10 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                             onMouseDown={(e) => handleCornerMouseDown(e, layer.id, corner)}
                           />
                         ))}
+                        {isActive && (
+                          <div className="ccRotateHandle" title="Drag to rotate (Shift = 15° steps)"
+                            onMouseDown={(e) => handleRotateMouseDown(e, layer.id, true)} />
+                        )}
                       </div>
                     );
                   })}
@@ -515,8 +664,9 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                   <div className="coverCreatorTextOverlay">
                     {(safeCreator.textLayers || []).map((layer) => {
                       const isDragging = safeCreator.draggingLayerId === layer.id;
+                      const isActive = safeCreator.activeLayerId === layer.id;
                       return (
-                        <div key={layer.id} className="coverCreatorTextHandle"
+                        <div key={layer.id} className={`coverCreatorTextHandle ${isActive ? "isActive" : ""}`.trim()}
                           style={{
                             left: `${clamp01(layer.x) * 100}%`, top: `${clamp01(layer.y) * 100}%`,
                             maxWidth: `${Math.round(Math.max(20, Math.min(95, (Number(layer.maxWidth) || 0.78) * 100)))}%`,
@@ -529,6 +679,14 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                           onClick={() => commit((prev) => ({ ...prev, activeLayerId: layer.id }))}
                         >
                           {previewWrappedTextByLayer[layer.id] || layer.text || "Text"}
+                          {isActive && (
+                            <>
+                              <div className="ccTextResizeHandle" title="Drag to scale font size"
+                                onMouseDown={(e) => handleTextCornerMouseDown(e, layer.id)} />
+                              <div className="ccRotateHandle" title="Drag to rotate (Shift = 15° steps)"
+                                onMouseDown={(e) => handleRotateMouseDown(e, layer.id, false)} />
+                            </>
+                          )}
                         </div>
                       );
                     })}
@@ -1024,7 +1182,32 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
         )}
       </div>
 
+      {/* Ordem (frente/trás) — texto e forma compartilham a mesma pilha agora */}
+      <div className="ccPopoverWrap">
+        <button className={`ccSidebarTool ${openPanel === "order" ? "isActive" : ""}`}
+          onClick={(e) => { e.stopPropagation(); togglePanel("order"); }}>
+          <IconLayersOrder size={17} />
+          <span className="ccSidebarToolLabel">Order</span>
+        </button>
+        {openPanel === "order" && (
+          <div className="ccPopover">
+            <div className="ccPopoverTitle">Stacking order</div>
+            <button className="ccAddMenuItem" onClick={() => commit((prev) => reorderCoverLayer(prev, selectedLayer.id, "front"))}>Bring to front</button>
+            <button className="ccAddMenuItem" onClick={() => commit((prev) => reorderCoverLayer(prev, selectedLayer.id, "forward"))}>Bring forward</button>
+            <button className="ccAddMenuItem" onClick={() => commit((prev) => reorderCoverLayer(prev, selectedLayer.id, "backward"))}>Send backward</button>
+            <button className="ccAddMenuItem" onClick={() => commit((prev) => reorderCoverLayer(prev, selectedLayer.id, "back"))}>Send to back</button>
+          </div>
+        )}
+      </div>
+
       <div className="ccSidebarDivider" />
+
+      {/* Duplicate */}
+      <button className="ccSidebarTool" title="Duplicate (Ctrl+D)"
+        onClick={() => commit((prev) => duplicateCoverLayer(prev, selectedLayer.id))}>
+        <IconCopy size={15} />
+        <span className="ccSidebarToolLabel">Dup.</span>
+      </button>
 
       {/* Delete */}
       {(selectedIsShape || selectedLayer.role === "custom" || selectedLayer.role === "symbol") && (

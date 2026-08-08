@@ -126,6 +126,35 @@ export const IconSparkle = ({ size = 16 }) => (
   </IconBase>
 );
 
+export const IconUndo = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <path d="M7 7H4V4" />
+    <path d="M4 7a8 8 0 1 1-1.5 6.5" />
+  </IconBase>
+);
+
+export const IconRedo = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <path d="M17 7h3V4" />
+    <path d="M20 7a8 8 0 1 0 1.5 6.5" />
+  </IconBase>
+);
+
+export const IconCopy = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <rect x="8" y="8" width="12" height="12" rx="1.5" />
+    <path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4H5.5A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8" />
+  </IconBase>
+);
+
+export const IconLayersOrder = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <path d="M12 3l8 4.5-8 4.5-8-4.5z" strokeLinejoin="round" />
+    <path d="M4 12l8 4.5 8-4.5" strokeLinejoin="round" />
+    <path d="M4 16.5l8 4.5 8-4.5" strokeLinejoin="round" />
+  </IconBase>
+);
+
 export const IconSettings = ({ size = 16 }) => (
   <IconBase size={size}>
     <circle cx="12" cy="12" r="3" />
