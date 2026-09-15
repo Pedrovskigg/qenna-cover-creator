@@ -327,6 +327,22 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   justify-content: center;
 }
 
+/* Resultados da IA na sessão */
+.ccAiResults { display: flex; flex-direction: column; gap: 4px; }
+.ccAiResultsGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; max-height: 190px; overflow-y: auto; }
+.ccAiResult {
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  background: rgba(255,255,255,0.05);
+  aspect-ratio: 2 / 3;
+}
+.ccAiResult img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ccAiResult:hover { border-color: rgba(110,168,254,0.5); }
+.ccAiResult.isActive { border-color: var(--ui-accent, #6ea8fe); }
+
 /* Templates de layout */
 /* Fica na lateral esquerda, para a capa continuar visível ao aplicar. */
 .ccTemplatesCard {

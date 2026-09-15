@@ -292,6 +292,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
   const [showAiSettings, setShowAiSettings] = useState(false);
   const [showThumb, setShowThumb] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [aiSession, setAiSession] = useState({ description: "", results: [] });
   const imageLayerInputRef = useRef(null);
 
   const safeCreator = ensureCoverCreatorState(creator);
@@ -1018,6 +1019,9 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                   onBack={() => setOpenPanel("image")}
                   onDone={() => setOpenPanel(null)}
                   onOpenSettings={() => setShowAiSettings(true)}
+                  session={aiSession}
+                  setSession={setAiSession}
+                  currentBg={safeCreator.bgImage}
                 />
               )}
             </div>
@@ -1904,15 +1908,19 @@ function ExportPanel({ onExport }) {
   );
 }
 
-function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSettings }) {
+function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSettings, session, setSession, currentBg }) {
   const [aiConfig, setAiConfig] = useState(null);
-  const [description, setDescription] = useState("");
+  // Descrição e resultados vivem no modal: fechar o popover não perde o que
+  // já foi pago para gerar.
+  const description = session.description;
+  const setDescription = (value) => setSession((prev) => ({ ...prev, description: value }));
+  const [count, setCount] = useState(1);
   const [stylePreset, setStylePreset] = useState("default");
   const [openaiImageModel, setOpenaiImageModel] = useState("gpt-image-1-mini");
   const [quality, setQuality] = useState("medium");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [popoverRef, popoverStyle] = usePopoverFitInViewport();
+  const [popoverRef, popoverStyle] = usePopoverFitInViewport(`${session.results.length}:${!!error}`);
 
   useEffect(() => {
     let cancelled = false;
@@ -1930,7 +1938,7 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
     setLoading(true);
     setError(null);
     try {
-      const { dataUrl } = await generateCoverArt({
+      const { dataUrls } = await generateCoverArt({
         provider: aiConfig.provider,
         apiKey: aiConfig.apiKey,
         baseUrl: aiConfig.baseUrl,
@@ -1941,15 +1949,23 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
         stylePreset,
         title,
         author,
+        count,
       });
-      commit((prev) => ({ ...prev, bgImage: dataUrl, bgImageFocusX: 0.5, bgImageFocusY: 0.5, bgImageScale: 1 }));
-      onDone();
+      setSession((prev) => ({ ...prev, results: [...dataUrls, ...prev.results].slice(0, 12) }));
+      applyBg(dataUrls[0]);
+      // Uma imagem só: comportamento de antes (aplica e fecha). Várias: fica
+      // aberto para comparar clicando nas miniaturas.
+      if (dataUrls.length === 1) onDone();
     } catch (err) {
       setError(err.message || "Image generation failed.");
     } finally {
       setLoading(false);
     }
-  }, [hasKey, description, loading, aiConfig, isGemini, openaiImageModel, quality, stylePreset, title, author, commit, onDone]);
+  }, [hasKey, description, loading, aiConfig, isGemini, openaiImageModel, quality, stylePreset, title, author, count, onDone]);
+
+  function applyBg(dataUrl) {
+    commit((prev) => ({ ...prev, bgImage: dataUrl, bgImageFocusX: 0.5, bgImageFocusY: 0.5, bgImageScale: 1 }));
+  }
 
   return (
     <div ref={popoverRef} className="ccPopover"
@@ -1988,6 +2004,15 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
             {COVER_STYLE_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
           </select>
         </div>
+        <div className="ccField" style={{ alignItems: "stretch" }}>
+          <span className="ccFieldLabel">Images</span>
+          <select className="ccBevelSelect" value={count} onChange={(e) => setCount(Number(e.target.value))}
+            title="Variations from the same prompt. Each image is billed by your provider.">
+            <option value={1}>1</option>
+            <option value={2}>2</option>
+            <option value={4}>4</option>
+          </select>
+        </div>
         {!isGemini && (
           <div className="ccField" style={{ alignItems: "stretch" }}>
             <span className="ccFieldLabel">Quality</span>
@@ -2012,10 +2037,23 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
 
       {error && <div className="ccAiError">{error}</div>}
 
+      {session.results.length > 0 && (
+        <div className="ccAiResults">
+          <span className="ccFieldLabel" style={{ textAlign: "left" }}>This session · click to use</span>
+          <div className="ccAiResultsGrid">
+            {session.results.map((url, i) => (
+              <button key={i} className={`ccAiResult ${currentBg === url ? "isActive" : ""}`} onClick={() => applyBg(url)}>
+                <img src={url} alt="" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <button className="ccBtnPrimary" style={{ width: "100%" }}
         disabled={!hasKey || !description.trim() || loading}
         onClick={handleGenerate}>
-        {loading ? "Generating…" : "Generate"}
+        {loading ? (count > 1 ? `Generating ${count} images…` : "Generating…") : (count > 1 ? `Generate ${count}` : "Generate")}
       </button>
     </div>
   );

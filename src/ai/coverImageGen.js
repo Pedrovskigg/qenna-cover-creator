@@ -75,7 +75,7 @@ async function engineerCoverPromptOpenAI({ apiKey, baseUrl, model, description, 
   return prompt;
 }
 
-async function generateCoverImageOpenAI({ apiKey, prompt, model, quality }) {
+async function generateCoverImagesOpenAI({ apiKey, prompt, model, quality, count }) {
   const res = await fetch(OPENAI_IMAGE_GENERATIONS_URL, {
     method: "POST",
     headers: {
@@ -87,16 +87,16 @@ async function generateCoverImageOpenAI({ apiKey, prompt, model, quality }) {
       prompt,
       size: "1024x1536",
       quality,
-      n: 1,
+      n: count,
     }),
   });
 
   if (!res.ok) throw new Error(await extractApiError(res));
 
   const data = await res.json();
-  const b64 = data?.data?.[0]?.b64_json;
-  if (!b64) throw new Error("The image API response did not include image data.");
-  return `data:image/png;base64,${b64}`;
+  const images = (data?.data || []).map((d) => d?.b64_json).filter(Boolean).map((b64) => `data:image/png;base64,${b64}`);
+  if (!images.length) throw new Error("The image API response did not include image data.");
+  return images;
 }
 
 // ── Gemini ("nano banana") ──────────────────────────────────────────────
@@ -151,14 +151,29 @@ async function generateCoverImageGemini({ apiKey, prompt, model }) {
   return `data:${mimeType || "image/png"};base64,${b64}`;
 }
 
-/** Roda os dois passos em sequência para o provedor escolhido. Retorna { prompt, dataUrl }. */
-export async function generateCoverArt({ provider, apiKey, baseUrl, chatModel, imageModel, quality, description, stylePreset, title, author }) {
+// Gemini não tem "n": dispara as variações em paralelo e fica com as que
+// deram certo — uma falha isolada não deve jogar fora as outras imagens.
+async function generateCoverImagesGemini({ apiKey, prompt, model, count }) {
+  const results = await Promise.allSettled(
+    Array.from({ length: count }, () => generateCoverImageGemini({ apiKey, prompt, model }))
+  );
+  const images = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
+  if (!images.length) throw results[0].reason;
+  return images;
+}
+
+/**
+ * Escreve o prompt uma vez e gera `count` variações a partir dele (mesma
+ * direção de arte, composições diferentes). Retorna { prompt, dataUrls }.
+ */
+export async function generateCoverArt({ provider, apiKey, baseUrl, chatModel, imageModel, quality, description, stylePreset, title, author, count = 1 }) {
+  const n = Math.max(1, Math.min(4, Math.round(Number(count) || 1)));
   if (provider === "gemini") {
     const prompt = await engineerCoverPromptGemini({ apiKey, model: chatModel, description, stylePreset, title, author });
-    const dataUrl = await generateCoverImageGemini({ apiKey, prompt, model: imageModel });
-    return { prompt, dataUrl };
+    const dataUrls = await generateCoverImagesGemini({ apiKey, prompt, model: imageModel, count: n });
+    return { prompt, dataUrls };
   }
   const prompt = await engineerCoverPromptOpenAI({ apiKey, baseUrl, model: chatModel, description, stylePreset, title, author });
-  const dataUrl = await generateCoverImageOpenAI({ apiKey, prompt, model: imageModel, quality });
-  return { prompt, dataUrl };
+  const dataUrls = await generateCoverImagesOpenAI({ apiKey, prompt, model: imageModel, quality, count: n });
+  return { prompt, dataUrls };
 }
