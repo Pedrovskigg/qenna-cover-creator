@@ -1,5 +1,6 @@
 import { defaultBgFilter } from "../canvas/filters.js";
 import { normalizeOverlay } from "../canvas/overlay.js";
+import { normalizePrintCover } from "../canvas/printCover.js";
 import { makeCoverTextLayer, buildDefaultCoverTextLayers } from "./textLayer.js";
 import { makeCoverShapeLayer } from "./shapeLayer.js";
 import { makeCoverImageLayer } from "./imageLayer.js";
@@ -14,6 +15,7 @@ export const COVER_STATE_PERSIST_KEYS = [
   "bgFilter", "overlay",
   "borderEnabled", "borderColor", "borderWidth",
   "textLayers", "shapeLayers", "imageLayers",
+  "printCover",
 ];
 
 export function ensureCoverCreatorState(data) {
@@ -54,6 +56,7 @@ export function ensureCoverCreatorState(data) {
       ? { ...defaultBgFilter(), ...data.bgFilter }
       : defaultBgFilter(),
     overlay: normalizeOverlay(data.overlay),
+    printCover: normalizePrintCover(data.printCover),
     previewExpanded: !!data.previewExpanded,
   };
 }

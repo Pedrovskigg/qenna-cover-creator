@@ -22,6 +22,10 @@ import { renderCoverDataUrl, COVER_BASE_WIDTH, COVER_BASE_HEIGHT, COVER_EXPORT_P
 import { buildFontString, layoutTextLayer } from "./canvas/text.js";
 import { normalizeOverlay } from "./canvas/overlay.js";
 import { registerUserFonts, unregisterUserFontFiles } from "./data/userFonts.js";
+import {
+  PRINT_TRIM_SIZES, PRINT_PAPERS, PRINT_SPINE_TEXT_MIN_PAGES, normalizePrintCover, computeWrapGeometry,
+  renderPrintCoverCanvas, canvasToPrintPdf,
+} from "./canvas/printCover.js";
 
 // ── Root: carrega projeto e gerencia estado ────────────────────────────────────
 
@@ -293,6 +297,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
   const [showThumb, setShowThumb] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [aiSession, setAiSession] = useState({ description: "", results: [] });
+  const [showPrintCover, setShowPrintCover] = useState(false);
   const imageLayerInputRef = useRef(null);
 
   const safeCreator = ensureCoverCreatorState(creator);
@@ -741,6 +746,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
           </div>
         </div>
         {showAiSettings && <AiSettingsModal onClose={() => setShowAiSettings(false)} />}
+        {showPrintCover && <PrintCoverModal creator={safeCreator} commit={commit} palette={bgAnalysis.palette} onClose={() => setShowPrintCover(false)} />}
 
         <div className={`ccWorkspace ${safeCreator.previewExpanded ? "isExpanded" : ""}`.trim()} onMouseDown={() => setOpenPanel(null)}>
 
@@ -919,7 +925,8 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                       <IconDownload size={14} />
                     </button>
                     {openPanel === "export" && (
-                      <ExportPanel onExport={(opts) => { onExport(opts); setOpenPanel(null); }} />
+                      <ExportPanel onExport={(opts) => { onExport(opts); setOpenPanel(null); }}
+                        onPrintCover={() => { setShowPrintCover(true); setOpenPanel(null); }} />
                     )}
                   </div>
                 </div>
@@ -1883,7 +1890,7 @@ function OverlayPanel({ overlay, commit, palette }) {
   );
 }
 
-function ExportPanel({ onExport }) {
+function ExportPanel({ onExport, onPrintCover }) {
   const [presetKey, setPresetKey] = useState("standard");
   const [format, setFormat] = useState("jpeg");
   return (
@@ -1904,6 +1911,169 @@ function ExportPanel({ onExport }) {
       </div>
       <button className="ccBtnPrimary" style={{ width: "100%", marginTop: 4 }}
         onClick={() => onExport({ presetKey, format })}>Download</button>
+      <div className="ccAddMenuSep" />
+      <button className="ccExportOption" onClick={onPrintCover}>
+        <span>Print cover (front, spine, back)</span>
+        <span className="ccExportDims">PDF</span>
+      </button>
+    </div>
+  );
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// Capa completa para impressão. Pré-visualização em baixa resolução com as
+// guias; o arquivo final é renderizado a 300 dpi, sem guias.
+function PrintCoverModal({ creator, commit, palette, onClose }) {
+  const settings = normalizePrintCover(creator.printCover);
+  const geometry = computeWrapGeometry(settings, 300);
+  const previewRef = useRef(null);
+  const [busy, setBusy] = useState(null);
+  const set = (patch) => commit((p) => ({ ...p, printCover: { ...normalizePrintCover(p.printCover), ...patch } }));
+
+  // A renderização completa demora; espera o usuário parar de digitar.
+  const previewKey = JSON.stringify([settings, creator.bgImage?.length, creator.bgFilter, creator.overlay,
+    creator.textLayers, creator.shapeLayers, (creator.imageLayers || []).map((l) => [l.id, l.x, l.y, l.width, l.angle, l.hidden])]);
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const { canvas } = await renderPrintCoverCanvas(creator, settings, { dpi: 48, guides: true });
+      if (cancelled || !previewRef.current) return;
+      const target = previewRef.current;
+      target.width = canvas.width;
+      target.height = canvas.height;
+      target.getContext("2d").drawImage(canvas, 0, 0);
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewKey]);
+
+  const titleText = (creator.textLayers || []).find((l) => l.role === "title")?.text || "cover";
+  const fileBase = titleText.normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "cover";
+
+  const download = async (format) => {
+    setBusy(format);
+    try {
+      const { canvas, geometry: g } = await renderPrintCoverCanvas(creator, settings, { dpi: 300 });
+      const name = `${fileBase}-print-${settings.trim}-${settings.pages}p`;
+      if (format === "pdf") downloadBlob(canvasToPrintPdf(canvas, g.widthIn, g.heightIn), `${name}.pdf`);
+      else canvas.toBlob((blob) => blob && downloadBlob(blob, `${name}.png`), "image/png");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const spineTextBlocked = settings.pages < PRINT_SPINE_TEXT_MIN_PAGES;
+  const colorOf = (value) => value || creator.bgColor || "#1b1b1f";
+
+  return (
+    <div className="ccAiSettingsOverlay" onMouseDown={onClose}>
+      <div className="ccPrintBox" onMouseDown={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontWeight: 700, fontSize: 13 }}>Print cover</span>
+          <button className="coverCreatorCloseBtn" onClick={onClose} title="Close"><IconX size={14} /></button>
+        </div>
+
+        <div className="ccPrintLayout">
+          <div className="ccPrintSettings">
+            <div className="ccFieldGrid">
+              <div className="ccField" style={{ alignItems: "stretch" }}>
+                <span className="ccFieldLabel">Trim size</span>
+                <select className="ccBevelSelect" value={settings.trim} onChange={(e) => set({ trim: e.target.value })}>
+                  {PRINT_TRIM_SIZES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+                </select>
+              </div>
+              <div className="ccField" style={{ alignItems: "stretch" }}>
+                <span className="ccFieldLabel">Pages</span>
+                <input className="modalInput" type="number" min={1} max={1200} value={settings.pages}
+                  onChange={(e) => set({ pages: Number(e.target.value) })} />
+              </div>
+            </div>
+            <div className="ccField" style={{ alignItems: "stretch" }}>
+              <span className="ccFieldLabel">Paper</span>
+              <select className="ccBevelSelect" value={settings.paper} onChange={(e) => set({ paper: e.target.value })}>
+                {PRINT_PAPERS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+              </select>
+            </div>
+            <div className="ccPrintInfo">
+              Spine {geometry.spineIn.toFixed(3)} in · full size {geometry.widthIn.toFixed(3)} × {geometry.heightIn.toFixed(3)} in
+            </div>
+
+            <div className="ccAddMenuSep" />
+            <div className="ccPopoverTitle">Spine</div>
+            <div className="ccStyleBar">
+              <button className={`ccFilterPresetBtn ${settings.spineMode === "color" ? "isActive" : ""}`} onClick={() => set({ spineMode: "color" })}>Color</button>
+              <button className={`ccFilterPresetBtn ${settings.spineMode === "art" ? "isActive" : ""}`} onClick={() => set({ spineMode: "art" })}>Extend art</button>
+              {settings.spineMode === "color" && (
+                <label className="ccColorBtn" style={{ marginLeft: 6 }}>
+                  <input type="color" value={colorOf(settings.spineColor)} onChange={(e) => set({ spineColor: e.target.value })} />
+                  <span className="ccColorDot" style={{ background: colorOf(settings.spineColor) }} />
+                </label>
+              )}
+            </div>
+            {settings.spineMode === "color" && <ColorSuggestions palette={palette} onPick={(hex) => set({ spineColor: hex })} />}
+            <label className="ccBorderToggle" style={{ opacity: spineTextBlocked ? 0.5 : 1 }}>
+              <input type="checkbox" checked={settings.spineText} onChange={(e) => set({ spineText: e.target.checked })} />
+              <span>Title and author on spine</span>
+              <input type="color" className="ccInlineColor" value={settings.spineTextColor} title="Spine text color"
+                onChange={(e) => set({ spineTextColor: e.target.value })} />
+            </label>
+
+            <div className="ccAddMenuSep" />
+            <div className="ccPopoverTitle">Back cover</div>
+            <div className="ccStyleBar">
+              <button className={`ccFilterPresetBtn ${settings.backMode === "art" ? "isActive" : ""}`} onClick={() => set({ backMode: "art" })}>Extend art</button>
+              <button className={`ccFilterPresetBtn ${settings.backMode === "color" ? "isActive" : ""}`} onClick={() => set({ backMode: "color" })}>Color</button>
+              {settings.backMode === "color" && (
+                <label className="ccColorBtn" style={{ marginLeft: 6 }}>
+                  <input type="color" value={colorOf(settings.backColor)} onChange={(e) => set({ backColor: e.target.value })} />
+                  <span className="ccColorDot" style={{ background: colorOf(settings.backColor) }} />
+                </label>
+              )}
+            </div>
+            {settings.backMode === "color" && <ColorSuggestions palette={palette} onPick={(hex) => set({ backColor: hex })} />}
+            <textarea className="modalInput" rows={5} placeholder="Back cover blurb…" value={settings.blurb}
+              onChange={(e) => set({ blurb: e.target.value })} style={{ resize: "vertical" }} />
+            <select className="ccBevelSelect" value={settings.blurbFont} onChange={(e) => set({ blurbFont: e.target.value })} title="Blurb font">
+              {COVER_FONT_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+            </select>
+            <div className="ccStyleBar" style={{ gap: 12 }}>
+              <label className="ccBorderToggle">
+                <span>Text color</span>
+                <input type="color" className="ccInlineColor" value={settings.blurbColor} onChange={(e) => set({ blurbColor: e.target.value })} />
+              </label>
+              <label className="ccBorderToggle">
+                <input type="checkbox" checked={settings.barcodeBox} onChange={(e) => set({ barcodeBox: e.target.checked })} />
+                <span>Barcode area</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="ccPrintPreviewCol">
+            <canvas ref={previewRef} className="ccPrintPreview" />
+            <div className="ccPrintLegend">
+              <span><i style={{ background: "#ef4444" }} />Trim (bleed outside)</span>
+              <span><i style={{ background: "#22d3ee" }} />Spine folds</span>
+              <span><i style={{ background: "#facc15" }} />Safe area</span>
+            </div>
+            {geometry.warnings.map((w) => (
+              <div key={w} className="ccContrastHint"><IconWarning size={13} /><span>{w}</span></div>
+            ))}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: "auto" }}>
+              <button className="ccBtnSecondary" disabled={!!busy} onClick={() => download("png")}>{busy === "png" ? "Rendering…" : "PNG"}</button>
+              <button className="ccBtnPrimary" disabled={!!busy} onClick={() => download("pdf")}>{busy === "pdf" ? "Rendering…" : "Download PDF (300 dpi)"}</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

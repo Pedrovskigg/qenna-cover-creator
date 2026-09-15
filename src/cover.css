@@ -327,6 +327,44 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   justify-content: center;
 }
 
+/* Capa completa para impressão */
+.ccPrintBox {
+  width: min(1040px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  background: var(--ui-menu, #1e1e22);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 14px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+.ccPrintLayout { display: flex; gap: 18px; min-height: 0; }
+.ccPrintSettings {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  max-height: calc(100vh - 120px);
+  padding-right: 4px;
+}
+.ccPrintPreviewCol { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.ccPrintPreview {
+  width: 100%;
+  height: auto;
+  max-height: calc(100vh - 220px);
+  object-fit: contain;
+  background: rgba(0,0,0,0.3);
+  border-radius: 6px;
+}
+.ccPrintInfo { font-size: 11px; color: var(--ui-muted, rgba(255,255,255,0.5)); font-variant-numeric: tabular-nums; }
+.ccPrintLegend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 10.5px; color: var(--ui-muted, rgba(255,255,255,0.55)); }
+.ccPrintLegend i { display: inline-block; width: 10px; height: 2px; margin-right: 5px; vertical-align: middle; }
+.ccInlineColor { width: 22px; height: 18px; padding: 0; border: none; background: none; cursor: pointer; }
+
 /* Resultados da IA na sessão */
 .ccAiResults { display: flex; flex-direction: column; gap: 4px; }
 .ccAiResultsGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; max-height: 190px; overflow-y: auto; }
