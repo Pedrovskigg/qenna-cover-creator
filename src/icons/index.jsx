@@ -155,7 +155,36 @@ export const IconLayersOrder = ({ size = 16 }) => (
   </IconBase>
 );
 
-export const IconSettings = ({ size = 16 }) => (
+export const IconTextVertical = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <path d="M6 4h6" />
+    <path d="M9 4v7" />
+    <path d="M6 14h6" />
+    <path d="M9 14v6" />
+    <path d="M17 5v14" />
+    <path d="M14.5 16.5L17 19l2.5-2.5" />
+  </IconBase>
+);
+
+export const IconTextHorizontal = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <path d="M4 6h7" />
+    <path d="M7.5 6v8" />
+    <path d="M5 18h14" />
+    <path d="M16.5 15.5L19 18l-2.5 2.5" />
+  </IconBase>
+);
+
+export const IconOverlay = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <rect x="4" y="3" width="16" height="18" rx="2" />
+    <path d="M4 13h16" strokeOpacity="0.45" />
+    <path d="M4 16.5h16" strokeOpacity="0.7" />
+    <path d="M5 19.5h14" />
+  </IconBase>
+);
+
+export const IconSettings =({ size = 16 }) => (
   <IconBase size={size}>
     <circle cx="12" cy="12" r="3" />
     <path d="M12 3v2.4" />

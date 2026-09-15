@@ -1,9 +1,22 @@
 import { buildImageFilterString } from "./filters.js";
 import { drawShapeLayer } from "./shapes.js";
-import { drawLayerText, buildFontString, wrapText } from "./text.js";
+import { drawLayerText, buildFontString } from "./text.js";
+import { drawOverlayGradient, drawGrain } from "./overlay.js";
 import { makeCoverTextLayer, buildDefaultCoverTextLayers } from "../layers/textLayer.js";
 import { makeCoverShapeLayer } from "../layers/shapeLayer.js";
 import { clamp01 } from "../utils/math.js";
+
+// Espaço de coordenadas em que o editor trabalha (tamanhos de fonte, bordas etc.
+// são guardados em px relativos a essa largura).
+export const COVER_BASE_WIDTH = 720;
+export const COVER_BASE_HEIGHT = 1080;
+
+export const COVER_EXPORT_PRESETS = [
+  { key: "standard", label: "Standard", width: 1200, height: 1800 },
+  { key: "ebook", label: "Ebook", width: 1600, height: 2400 },
+  { key: "print6x9", label: "Print 6×9 in (300 dpi)", width: 1800, height: 2700 },
+  { key: "hires", label: "High res", width: 2400, height: 3600 },
+];
 
 export function getCoverImageDraw(frameW, frameH, imgW, imgH, focusX, focusY, scale = 1) {
   const fx = clamp01(focusX);
@@ -41,16 +54,19 @@ export async function renderCoverDataUrl({
   authorFontFamily, authorFontSize, authorFontWeight, authorFontStyle, authorTextDecoration,
   fontColor, bgColor, bgImage,
   bgImageFocusX, bgImageFocusY, bgImageScale,
-  bgFilter, borderEnabled, borderColor, borderWidth,
+  bgFilter, overlay, borderEnabled, borderColor, borderWidth,
   textLayers, shapeLayers,
   renderText = true,
   textScale = 1,
+  format = "jpeg",
 }) {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
+
+  const safeTextScale = Math.max(0.1, Number(textScale) || 1);
 
   ctx.fillStyle = bgColor || "#1b1b1f";
   ctx.fillRect(0, 0, width, height);
@@ -66,8 +82,10 @@ export async function renderCoverDataUrl({
     } catch {}
   }
 
+  drawOverlayGradient(ctx, overlay, width, height);
+
   if (borderEnabled) {
-    const bw = Math.max(2, Number(borderWidth) || 2);
+    const bw = Math.max(2, (Number(borderWidth) || 2) * safeTextScale);
     ctx.strokeStyle = borderColor || "#ffffff";
     ctx.lineWidth = bw;
     const inset = Math.round(bw / 2);
@@ -77,15 +95,20 @@ export async function renderCoverDataUrl({
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
 
-  const safeTextScale = Math.max(0.1, Number(textScale) || 1);
-
+  // Escala sem passar de novo pelo make*Layer: os limites de validação (ex.
+  // fontSize ≤ 800) valem para o espaço do editor, não para um export 3×.
   const scaledShapeLayers = Array.isArray(shapeLayers)
     ? shapeLayers.map((raw) => {
         const sl = makeCoverShapeLayer(raw);
-        return safeTextScale === 1 ? sl : makeCoverShapeLayer({
+        return safeTextScale === 1 ? sl : {
           ...sl,
           strokeWidth: (Number(sl.strokeWidth) || 0) * safeTextScale,
-        });
+          cornerRadius: (Number(sl.cornerRadius) || 0) * safeTextScale,
+          shadowBlur: (Number(sl.shadowBlur) || 0) * safeTextScale,
+          shadowX: (Number(sl.shadowX) || 0) * safeTextScale,
+          shadowY: (Number(sl.shadowY) || 0) * safeTextScale,
+          glowSize: (Number(sl.glowSize) || 0) * safeTextScale,
+        };
       })
     : [];
 
@@ -99,9 +122,10 @@ export async function renderCoverDataUrl({
       });
   const scaledTextLayers = safeTextScale === 1
     ? rawTextLayers
-    : rawTextLayers.map((layer) => makeCoverTextLayer({
+    : rawTextLayers.map((layer) => ({
         ...layer,
         fontSize: Math.max(8, (Number(layer.fontSize) || 0) * safeTextScale),
+        letterSpacing: (Number(layer.letterSpacing) || 0) * safeTextScale,
         shadowBlur: Math.max(0, (Number(layer.shadowBlur) || 0) * safeTextScale),
         shadowX: (Number(layer.shadowX) || 0) * safeTextScale,
         shadowY: (Number(layer.shadowY) || 0) * safeTextScale,
@@ -135,9 +159,13 @@ export async function renderCoverDataUrl({
     }
     if (!String(layer.text || "").trim()) continue;
     ctx.font = buildFontString(layer.fontSize, layer.fontFamily, layer.fontWeight, layer.fontStyle);
-    ctx.textAlign = layer.align === "left" ? "left" : layer.align === "right" ? "right" : "center";
     drawLayerText(ctx, layer, width, height);
   }
 
-  return canvas.toDataURL("image/jpeg", 0.9);
+  // Grão por cima de tudo, como papel impresso.
+  drawGrain(ctx, overlay, width, height, safeTextScale);
+
+  return format === "png"
+    ? canvas.toDataURL("image/png")
+    : canvas.toDataURL("image/jpeg", 0.9);
 }

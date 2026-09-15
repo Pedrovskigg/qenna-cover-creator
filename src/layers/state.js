@@ -1,4 +1,5 @@
 import { defaultBgFilter } from "../canvas/filters.js";
+import { normalizeOverlay } from "../canvas/overlay.js";
 import { makeCoverTextLayer, buildDefaultCoverTextLayers } from "./textLayer.js";
 import { makeCoverShapeLayer } from "./shapeLayer.js";
 import { clamp01 } from "../utils/math.js";
@@ -9,7 +10,7 @@ export const COVER_STATE_PERSIST_KEYS = [
   "authorFontFamily", "authorFontSize", "authorFontWeight", "authorFontStyle", "authorTextDecoration",
   "fontColor", "bgColor", "bgImage",
   "bgImageFocusX", "bgImageFocusY", "bgImageScale",
-  "bgFilter",
+  "bgFilter", "overlay",
   "borderEnabled", "borderColor", "borderWidth",
   "textLayers", "shapeLayers",
 ];
@@ -47,6 +48,7 @@ export function ensureCoverCreatorState(data) {
     bgFilter: data.bgFilter && typeof data.bgFilter === "object"
       ? { ...defaultBgFilter(), ...data.bgFilter }
       : defaultBgFilter(),
+    overlay: normalizeOverlay(data.overlay),
     previewExpanded: !!data.previewExpanded,
   };
 }

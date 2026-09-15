@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import CoverCropper from "./CoverCropper.jsx";
 import CcKnob from "./ui/CcKnob.jsx";
-import { IconX, IconFilter, IconMaximize, IconDownload, IconBevel, IconShadow, IconGlow, IconStroke, IconTransform, IconBorderFrame, IconSave, IconTrash, IconImage, IconSettings, IconSparkle, IconUndo, IconRedo, IconCopy, IconLayersOrder } from "./icons/index.jsx";
+import { IconX, IconFilter, IconMaximize, IconDownload, IconBevel, IconShadow, IconGlow, IconStroke, IconTransform, IconBorderFrame, IconSave, IconTrash, IconImage, IconSettings, IconSparkle, IconUndo, IconRedo, IconCopy, IconLayersOrder, IconTextVertical, IconTextHorizontal, IconOverlay } from "./icons/index.jsx";
 import { COVER_FONT_OPTIONS } from "./data/fonts.js";
 import { COVER_EMOJI_PICKS } from "./data/symbols.js";
 import { COVER_STYLE_PRESETS } from "./ai/coverStylePresets.js";
@@ -11,8 +11,9 @@ import { defaultBgFilter, buildImageFilterString } from "./canvas/filters.js";
 import { makeCoverTextLayer, applyCoverLayerPatch, addCustomCoverLayer, addSymbolCoverLayer } from "./layers/textLayer.js";
 import { makeCoverShapeLayer, applyCoverShapePatch, addShapeCoverLayer } from "./layers/shapeLayer.js";
 import { ensureCoverCreatorState, createCoverCreatorState, serializeCoverState, loadCoverStateFromProject, reorderCoverLayer, duplicateCoverLayer } from "./layers/state.js";
-import { renderCoverDataUrl, getCoverImageDraw } from "./canvas/render.js";
-import { buildFontString, wrapText } from "./canvas/text.js";
+import { renderCoverDataUrl, COVER_BASE_WIDTH, COVER_BASE_HEIGHT, COVER_EXPORT_PRESETS } from "./canvas/render.js";
+import { buildFontString, layoutTextLayer } from "./canvas/text.js";
+import { normalizeOverlay } from "./canvas/overlay.js";
 
 // ── Root: carrega projeto e gerencia estado ────────────────────────────────────
 
@@ -154,12 +155,24 @@ export default function CoverCreator() {
     window.miraCover.close();
   }, []);
 
-  const handleExport = useCallback(async () => {
+  const handleExport = useCallback(async ({ presetKey = "standard", format = "jpeg" } = {}) => {
     if (!creator) return;
-    const url = await renderCoverDataUrl({ width: 1200, height: 1800, textScale: 1200 / 720, ...creator });
+    const preset = COVER_EXPORT_PRESETS.find((p) => p.key === presetKey) || COVER_EXPORT_PRESETS[0];
+    const url = await renderCoverDataUrl({
+      ...creator,
+      width: preset.width,
+      height: preset.height,
+      textScale: preset.width / COVER_BASE_WIDTH,
+      format,
+    });
+    const titleText = creator.textLayers?.find((l) => l.role === "title")?.text || creator.title || "";
+    const slug = titleText
+      .normalize("NFD").replace(/[̀-ͯ]/g, "")
+      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+      .slice(0, 60);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "capa.jpg";
+    a.download = `${slug || "cover"}-${preset.width}x${preset.height}.${format === "png" ? "png" : "jpg"}`;
     a.click();
   }, [creator]);
 
@@ -292,13 +305,20 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
     return () => observer.disconnect();
   }, []);
 
-  const previewScale = Math.max(0.05, Math.min(
-    (previewBoxSize.width || 0) / 720,
-    (previewBoxSize.height || 0) / 1080
-  ) || 0.3);
+  // Fontes web carregam depois do primeiro layout; sem isso a caixa de seleção
+  // ficaria medida com a fonte fallback até a próxima edição.
+  const [fontsVersion, setFontsVersion] = useState(0);
+  useEffect(() => {
+    const fonts = document?.fonts;
+    if (!fonts?.addEventListener) return;
+    const bump = () => setFontsVersion((v) => v + 1);
+    fonts.addEventListener("loadingdone", bump);
+    return () => fonts.removeEventListener("loadingdone", bump);
+  }, []);
 
-  // Pré-calcula quebras de linha para o overlay de arraste
-  const previewWrappedTextByLayer = useMemo(() => {
+  // Caixa de cada texto no espaço do editor (720×1080), calculada pelo mesmo
+  // layout do render — assim a seleção bate com o que aparece na capa.
+  const previewTextBoxes = useMemo(() => {
     const map = {};
     const layers = safeCreator?.textLayers || [];
     if (!layers.length || typeof document === "undefined") return map;
@@ -308,11 +328,17 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
     for (const rawLayer of layers) {
       const layer = makeCoverTextLayer(rawLayer);
       ctx.font = buildFontString(layer.fontSize, layer.fontFamily, layer.fontWeight, layer.fontStyle);
-      const maxW = 720 * Math.max(0.2, Math.min(0.95, Number(layer.maxWidth) || 0.78));
-      map[layer.id] = wrapText(ctx, layer.text || "", maxW).join("\n");
+      const { box, anchorX, anchorY } = layoutTextLayer(ctx, layer, COVER_BASE_WIDTH, COVER_BASE_HEIGHT);
+      // Texto vazio ainda precisa de uma área clicável.
+      const minSide = Math.max(24, (Number(layer.fontSize) || 56) * 0.6);
+      const w = Math.max(minSide, box.w);
+      const h = Math.max(minSide, box.h);
+      const x = box.w < minSide ? anchorX - w / 2 : box.x;
+      map[layer.id] = { x, y: box.y, w, h, anchorX, anchorY };
     }
     return map;
-  }, [safeCreator?.textLayers]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [safeCreator?.textLayers, fontsVersion]);
 
   const commit = useCallback((updater) => {
     onChange((prev) => {
@@ -442,16 +468,24 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
   const handleRotateMouseDown = useCallback((event, layerId, isShape) => {
     event.preventDefault();
     event.stopPropagation();
-    const boxEl = event.currentTarget.parentElement;
-    if (!boxEl) return;
-    const box = boxEl.getBoundingClientRect();
-    const pivotX = box.left + box.width / 2;
-    const pivotY = box.top + box.height / 2;
+    if (!previewRef.current) return;
+    const layer = [...(safeCreator.textLayers || []), ...(safeCreator.shapeLayers || [])].find((l) => l.id === layerId);
+    if (!layer) return;
+    // Pivô = âncora da camada, que é o ponto em torno do qual o render gira
+    // (centro da forma; topo-centro do texto).
+    const rect = previewRef.current.getBoundingClientRect();
+    const pivotX = rect.left + clamp01(layer.x) * rect.width;
+    const pivotY = rect.top + clamp01(layer.y) * rect.height;
+    const startAngle = Number(layer.angle) || 0;
+    const startPointer = (Math.atan2(event.clientY - pivotY, event.clientX - pivotX) * 180) / Math.PI;
 
     const onMove = (e) => {
-      let deg = (Math.atan2(e.clientY - pivotY, e.clientX - pivotX) * 180) / Math.PI + 90;
-      if (deg > 180) deg -= 360;
-      if (deg < -180) deg += 360;
+      // Rotação relativa ao ponto onde o arraste começou: o handle nem sempre
+      // está alinhado com o pivô (ex.: texto girado), então ângulo absoluto do
+      // ponteiro faria a camada "pular" no primeiro movimento.
+      const pointer = (Math.atan2(e.clientY - pivotY, e.clientX - pivotX) * 180) / Math.PI;
+      let deg = startAngle + (pointer - startPointer);
+      deg = ((deg + 180) % 360 + 360) % 360 - 180;
       if (e.shiftKey) deg = Math.round(deg / 15) * 15;
       commit((prev) => isShape
         ? applyCoverShapePatch(prev, layerId, { angle: deg })
@@ -463,7 +497,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
-  }, [commit]);
+  }, [commit, safeCreator]);
 
   // Resize de texto pelo canto — escala o tamanho da fonte proporcionalmente
   // à distância do mouse até o canto oposto (âncora fixa).
@@ -561,6 +595,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
 
   if (!safeCreator) return null;
   const bgFilter = safeCreator.bgFilter || defaultBgFilter();
+  const overlay = normalizeOverlay(safeCreator.overlay);
   const togglePanel = (name) => setOpenPanel((p) => (p === name ? null : name));
 
   return (
@@ -639,6 +674,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                           left: `${clamp01(layer.x) * 100}%`, top: `${clamp01(layer.y) * 100}%`,
                           width: `${(Number(layer.width) || 0.5) * 100}%`, height: `${(Number(layer.height) || 0.04) * 100}%`,
                           background: "transparent",
+                          transform: layer.angle ? `translate(-50%, -50%) rotate(${Number(layer.angle)}deg)` : undefined,
                           outline: isActive ? "2px solid var(--ui-accent,#6ea8fe)" : "1px dashed rgba(255,255,255,0.22)",
                           outlineOffset: "1px",
                           ...(layer.shape === "circle" ? { borderRadius: "50%" } : {}),
@@ -663,22 +699,24 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                   {/* Handles de texto */}
                   <div className="coverCreatorTextOverlay">
                     {(safeCreator.textLayers || []).map((layer) => {
-                      const isDragging = safeCreator.draggingLayerId === layer.id;
                       const isActive = safeCreator.activeLayerId === layer.id;
+                      const box = previewTextBoxes[layer.id];
+                      if (!box) return null;
+                      const originX = box.w > 0 ? ((box.anchorX - box.x) / box.w) * 100 : 50;
                       return (
                         <div key={layer.id} className={`coverCreatorTextHandle ${isActive ? "isActive" : ""}`.trim()}
+                          title={layer.text || "Text"}
                           style={{
-                            left: `${clamp01(layer.x) * 100}%`, top: `${clamp01(layer.y) * 100}%`,
-                            maxWidth: `${Math.round(Math.max(20, Math.min(95, (Number(layer.maxWidth) || 0.78) * 100)))}%`,
-                            color: isDragging ? (layer.color || "#fff") : "transparent",
-                            fontSize: `${Math.max(8, Math.round((Number(layer.fontSize) || 42) * previewScale))}px`,
-                            fontFamily: layer.fontFamily, fontWeight: layer.fontWeight, fontStyle: layer.fontStyle,
-                            lineHeight: 1.1,
+                            left: `${(box.x / COVER_BASE_WIDTH) * 100}%`,
+                            top: `${(box.y / COVER_BASE_HEIGHT) * 100}%`,
+                            width: `${(box.w / COVER_BASE_WIDTH) * 100}%`,
+                            height: `${(box.h / COVER_BASE_HEIGHT) * 100}%`,
+                            transform: layer.angle ? `rotate(${Number(layer.angle)}deg)` : undefined,
+                            transformOrigin: `${originX}% 0%`,
                           }}
                           onMouseDown={(e) => handleLayerMouseDown(e, layer.id)}
                           onClick={() => commit((prev) => ({ ...prev, activeLayerId: layer.id }))}
                         >
-                          {previewWrappedTextByLayer[layer.id] || layer.text || "Text"}
                           {isActive && (
                             <>
                               <div className="ccTextResizeHandle" title="Drag to scale font size"
@@ -704,9 +742,16 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                   <button className="ccToolbarBtn" onClick={() => commit((prev) => ({ ...prev, previewExpanded: !prev.previewExpanded }))} title="Expand">
                     <IconMaximize size={14} />
                   </button>
-                  <button className="ccToolbarBtn" onClick={onExport} title="Export">
-                    <IconDownload size={14} />
-                  </button>
+                  <div className="ccExportWrap">
+                    <button className={`ccToolbarBtn ${openPanel === "export" ? "isActive" : ""}`} title="Export"
+                      onClick={(e) => { e.stopPropagation(); togglePanel("export"); }}
+                      onMouseDown={(e) => e.stopPropagation()}>
+                      <IconDownload size={14} />
+                    </button>
+                    {openPanel === "export" && (
+                      <ExportPanel onExport={(opts) => { onExport(opts); setOpenPanel(null); }} />
+                    )}
+                  </div>
                 </div>
               </>
             )}
@@ -782,6 +827,18 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                   onDone={() => setOpenPanel(null)}
                   onOpenSettings={() => setShowAiSettings(true)}
                 />
+              )}
+            </div>
+
+            {/* Overlay (degradê / vinheta / grão) */}
+            <div className="ccPopoverWrap">
+              <button className={`ccSidebarTool ${openPanel === "overlay" || overlay.type !== "none" || overlay.grain > 0 ? "isActive" : ""}`}
+                onClick={(e) => { e.stopPropagation(); togglePanel("overlay"); }}>
+                <IconOverlay size={17} />
+                <span className="ccSidebarToolLabel">Overlay</span>
+              </button>
+              {openPanel === "overlay" && (
+                <OverlayPanel overlay={overlay} commit={commit} />
               )}
             </div>
 
@@ -944,11 +1001,32 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
                       onClick={() => updateSelectedLayer({ textDecoration: selectedLayer.textDecoration === "underline" ? "none" : "underline" })}>
                       <span style={{ textDecoration: "underline" }}>U</span>
                     </button>
+                    <button className={`ccStyleBtn ${selectedLayer.textTransform === "uppercase" ? "isActive" : ""}`} title="All caps"
+                      onClick={() => updateSelectedLayer({ textTransform: selectedLayer.textTransform === "uppercase" ? "none" : "uppercase" })}>
+                      <span style={{ fontSize: 11 }}>AA</span>
+                    </button>
+                  </div>
+                  <div className="ccStyleBar">
+                    <button className={`ccStyleBtn ${selectedLayer.orientation !== "vertical" ? "isActive" : ""}`} title="Horizontal text"
+                      onClick={() => updateSelectedLayer({ orientation: "horizontal" })}>
+                      <IconTextHorizontal size={16} />
+                    </button>
+                    <button className={`ccStyleBtn ${selectedLayer.orientation === "vertical" ? "isActive" : ""}`} title="Vertical text (stacked letters)"
+                      onClick={() => updateSelectedLayer({ orientation: "vertical" })}>
+                      <IconTextVertical size={16} />
+                    </button>
                     <span className="ccStyleSep" />
-                    {["left", "center", "right"].map((a) => (
-                      <button key={a} className={`ccStyleBtn ${(selectedLayer.align || "center") === a ? "isActive" : ""}`}
-                        onClick={() => updateSelectedLayer({ align: a })}>{a === "left" ? "Left" : a === "center" ? "Ctr" : "Rgt"}</button>
-                    ))}
+                    {["left", "center", "right"].map((a) => {
+                      const vertical = selectedLayer.orientation === "vertical";
+                      const label = vertical
+                        ? (a === "left" ? "Top" : a === "center" ? "Mid" : "Bot")
+                        : (a === "left" ? "Left" : a === "center" ? "Ctr" : "Rgt");
+                      return (
+                        <button key={a} className={`ccStyleBtn ${(selectedLayer.align || "center") === a ? "isActive" : ""}`}
+                          title={vertical ? "Column alignment" : "Line alignment"}
+                          onClick={() => updateSelectedLayer({ align: a })}>{label}</button>
+                      );
+                    })}
                   </div>
                 </>
               )}
@@ -1176,7 +1254,8 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
               <CcKnob label="Rot." value={Number(selectedLayer.angle) || 0} min={-180} max={180} step={1} onChange={(v) => updateSelectedLayer({ angle: v })} />
               <CcKnob label="Opa." value={Math.round((selectedLayer.opacity ?? 1) * 100)} min={0} max={100} step={1} fmt={(v) => `${v}%`} onChange={(v) => updateSelectedLayer({ opacity: v / 100 })} />
               {!selectedIsShape && <CcKnob label="Spc." value={Number(selectedLayer.letterSpacing) || 0} min={-20} max={60} step={1} onChange={(v) => updateSelectedLayer({ letterSpacing: v })} />}
-              {!selectedIsShape && <CcKnob label="W%" value={Math.round((Number(selectedLayer.maxWidth) || 0.78) * 100)} min={20} max={95} step={1} fmt={(v) => `${v}%`} onChange={(v) => updateSelectedLayer({ maxWidth: v / 100 })} />}
+              {!selectedIsShape && <CcKnob label={selectedLayer.orientation === "vertical" ? "Col." : "Line"} value={Math.round((Number(selectedLayer.lineHeight) || 1.1) * 100)} min={60} max={250} step={5} fmt={(v) => (v / 100).toFixed(2)} onChange={(v) => updateSelectedLayer({ lineHeight: v / 100 })} />}
+              {!selectedIsShape && <CcKnob label={selectedLayer.orientation === "vertical" ? "H%" : "W%"} value={Math.round((Number(selectedLayer.maxWidth) || 0.78) * 100)} min={20} max={95} step={1} fmt={(v) => `${v}%`} onChange={(v) => updateSelectedLayer({ maxWidth: v / 100 })} />}
             </div>
           </div>
         )}
@@ -1259,6 +1338,90 @@ function ImageEditPanel({ bgFilter, commit, onBack }) {
   );
 }
 
+// A posição padrão de .ccPopover centraliza no botão que o abre, o que vaza
+// pra fora da janela quando um popover alto sai de um botão perto do rodapé
+// da sidebar (ex: "Image", "Overlay"). Depois do primeiro paint, mede o
+// retângulo real e empurra pra dentro da área visível se necessário.
+// `contentKey` muda quando o conteúdo muda de altura, forçando nova medição.
+function usePopoverFitInViewport(contentKey) {
+  const ref = useRef(null);
+  const [offsetY, setOffsetY] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const margin = 12;
+    // Mede a partir da posição padrão (sem o ajuste anterior aplicado).
+    const rect = el.getBoundingClientRect();
+    const baseTop = rect.top - offsetY;
+    const baseBottom = rect.bottom - offsetY;
+    let adjust = 0;
+    if (baseBottom > window.innerHeight - margin) adjust = window.innerHeight - margin - baseBottom;
+    if (baseTop + adjust < margin) adjust = margin - baseTop;
+    if (adjust !== offsetY) setOffsetY(adjust);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contentKey]);
+  return [ref, offsetY ? { transform: `translateY(calc(-50% + ${offsetY}px))` } : {}];
+}
+
+function OverlayPanel({ overlay, commit }) {
+  const hasGradient = overlay.type !== "none";
+  const [popoverRef, popoverStyle] = usePopoverFitInViewport(hasGradient);
+  const patch = (next) => commit((p) => ({ ...p, overlay: { ...normalizeOverlay(p.overlay), ...next } }));
+  return (
+    <div ref={popoverRef} className="ccPopover" style={{ minWidth: 240, ...popoverStyle }}>
+      <div className="ccPopoverTitle">Overlay</div>
+      <div className="ccFilterPresets" style={{ marginBottom: 2 }}>
+        {[{ key: "none", label: "None" }, { key: "bottom", label: "Bottom" }, { key: "top", label: "Top" },
+          { key: "both", label: "Top + bottom" }, { key: "vignette", label: "Vignette" }]
+          .map(({ key, label }) => (
+            <button key={key} className={`ccFilterPresetBtn ${overlay.type === key ? "isActive" : ""}`}
+              onClick={() => patch({ type: key })}>{label}</button>
+          ))}
+      </div>
+      {hasGradient && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <label className="ccColorBtn">
+            <input type="color" value={overlay.color} onChange={(e) => patch({ color: e.target.value })} />
+            <span className="ccColorDot" style={{ background: overlay.color }} />
+          </label>
+          <CcKnob label="Opa." value={Math.round(overlay.opacity * 100)} min={0} max={100} step={1} fmt={(v) => `${v}%`} onChange={(v) => patch({ opacity: v / 100 })} />
+          <CcKnob label="Size" value={Math.round(overlay.size * 100)} min={5} max={100} step={1} fmt={(v) => `${v}%`} onChange={(v) => patch({ size: v / 100 })} />
+        </div>
+      )}
+      <div className="ccAddMenuSep" />
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="ccPropLabel">Film grain</span>
+        <CcKnob label="Grain" value={overlay.grain} min={0} max={100} step={1} onChange={(v) => patch({ grain: v })} />
+      </div>
+    </div>
+  );
+}
+
+function ExportPanel({ onExport }) {
+  const [presetKey, setPresetKey] = useState("standard");
+  const [format, setFormat] = useState("jpeg");
+  return (
+    <div className="ccExportPopover" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="ccPopoverTitle">Export</div>
+      {COVER_EXPORT_PRESETS.map((p) => (
+        <button key={p.key} className={`ccExportOption ${presetKey === p.key ? "isActive" : ""}`}
+          onClick={() => setPresetKey(p.key)}>
+          <span>{p.label}</span>
+          <span className="ccExportDims">{p.width}×{p.height}</span>
+        </button>
+      ))}
+      <div className="ccStyleBar" style={{ marginTop: 4 }}>
+        {[{ key: "jpeg", label: "JPG" }, { key: "png", label: "PNG" }].map((f) => (
+          <button key={f.key} className={`ccFilterPresetBtn ${format === f.key ? "isActive" : ""}`}
+            onClick={() => setFormat(f.key)}>{f.label}</button>
+        ))}
+      </div>
+      <button className="ccBtnPrimary" style={{ width: "100%", marginTop: 4 }}
+        onClick={() => onExport({ presetKey, format })}>Download</button>
+    </div>
+  );
+}
+
 function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSettings }) {
   const [aiConfig, setAiConfig] = useState(null);
   const [description, setDescription] = useState("");
@@ -1267,24 +1430,7 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
   const [quality, setQuality] = useState("medium");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [offsetY, setOffsetY] = useState(0);
-  const popoverRef = useRef(null);
-
-  // Este popover é bem mais alto que os outros (textarea + selects + botão).
-  // A posição padrão de .ccPopover centraliza no botão que o abre, o que
-  // vaza pra fora da janela quando o botão fica perto do rodapé da sidebar
-  // (ex: "Image"). Depois do primeiro paint, mede o retângulo real e
-  // empurra pra dentro da área visível se necessário.
-  useLayoutEffect(() => {
-    const el = popoverRef.current;
-    if (!el) return;
-    const margin = 12;
-    const rect = el.getBoundingClientRect();
-    let adjust = 0;
-    if (rect.bottom > window.innerHeight - margin) adjust = window.innerHeight - margin - rect.bottom;
-    if (rect.top + adjust < margin) adjust = margin - rect.top;
-    if (adjust !== 0) setOffsetY(adjust);
-  }, []);
+  const [popoverRef, popoverStyle] = usePopoverFitInViewport();
 
   useEffect(() => {
     let cancelled = false;
@@ -1325,7 +1471,7 @@ function GenerateWithAiPanel({ title, author, commit, onBack, onDone, onOpenSett
 
   return (
     <div ref={popoverRef} className="ccPopover"
-      style={{ minWidth: 280, maxWidth: 320, transform: offsetY ? `translateY(calc(-50% + ${offsetY}px))` : undefined }}>
+      style={{ minWidth: 280, maxWidth: 320, ...popoverStyle }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <button className="ccAddMenuItem" style={{ padding: "2px 6px", fontSize: 10 }} onClick={onBack}>Back</button>
         <div className="ccPopoverTitle" style={{ marginBottom: 0 }}>Generate with AI</div>

@@ -160,6 +160,41 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 .ccToolbarBtn.isActive { background: rgba(110,168,254,0.18); color: var(--ui-accent,#6ea8fe); border-color: rgba(110,168,254,0.3); }
 .ccToolbarBtn .coverCreatorSwatch { position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer; }
 
+/* Export — abre para cima, dentro da área do preview (que tem overflow: hidden) */
+.ccExportWrap { position: relative; display: inline-flex; }
+.ccExportPopover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  min-width: 230px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--ui-menu, #1e1e22);
+  border: 1px solid rgba(255,255,255,0.13);
+  border-radius: 14px;
+  padding: 12px 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+}
+.ccExportOption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--ui-text, #eaeaea);
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+}
+.ccExportOption:hover { background: rgba(255,255,255,0.08); }
+.ccExportOption.isActive { border-color: var(--ui-accent, #6ea8fe); background: rgba(110,168,254,0.12); }
+.ccExportDims { font-size: 10.5px; color: var(--ui-muted, rgba(255,255,255,0.45)); font-variant-numeric: tabular-nums; }
+
 /* Expanded — preview cresce mais */
 .ccWorkspace.isExpanded .coverCreatorPreview {
   flex: 1;
@@ -549,21 +584,21 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 
 /* ── Text handles & guides ── */
 .coverCreatorTextOverlay { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+/* Geometria vem do layout do canvas (left/top/width/height em %); o contorno
+   fica por fora via outline-offset para não alterar a caixa medida. */
 .coverCreatorTextHandle {
   position: absolute;
-  transform: translate(-50%, 0);
-  line-height: 1.1;
-  white-space: pre-wrap;
-  text-align: center;
+  box-sizing: border-box;
   cursor: move;
   user-select: none;
   pointer-events: auto;
-  border-radius: 8px;
-  padding: 2px 4px;
-  border: 1px dashed transparent;
+  border-radius: 4px;
+  outline: 1px dashed transparent;
+  outline-offset: 3px;
 }
+.coverCreatorTextHandle:hover { outline-color: rgba(255,255,255,0.22); }
 .coverCreatorTextHandle.isActive {
-  border-color: var(--ui-accent, #6ea8fe);
+  outline: 1px dashed var(--ui-accent, #6ea8fe);
   z-index: 2;
 }
 .coverCreatorShapeHandle {

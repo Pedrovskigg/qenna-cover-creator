@@ -11,6 +11,11 @@ export function makeCoverTextLayer(partial = {}) {
     fontWeight: partial.fontWeight || "normal",
     fontStyle: partial.fontStyle || "normal",
     textDecoration: partial.textDecoration || "none",
+    textTransform: partial.textTransform === "uppercase" ? "uppercase" : "none",
+    orientation: partial.orientation === "vertical" ? "vertical" : "horizontal",
+    lineHeight: typeof partial.lineHeight === "number"
+      ? Math.max(0.6, Math.min(2.5, partial.lineHeight))
+      : 1.1,
     color: partial.color || "#ffffff",
     align: partial.align || "center",
     shadowColor: partial.shadowColor || "#000000",
@@ -106,7 +111,7 @@ export function applyCoverLayerPatch(state, layerId, patch) {
 export function addCustomCoverLayer(state) {
   if (!state) return state;
   const newLayer = makeCoverTextLayer({
-    role: "custom", text: "Novo texto", x: 0.5, y: 0.5,
+    role: "custom", text: "New text", x: 0.5, y: 0.5,
     fontFamily: state.titleFontFamily || "Crimson Text",
     fontSize: Math.max(14, Math.round((Number(state.titleFontSize) || 72) * 0.5)),
     color: state.fontColor || "#ffffff",
