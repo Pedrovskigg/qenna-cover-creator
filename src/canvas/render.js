@@ -4,6 +4,7 @@ import { drawLayerText, buildFontString } from "./text.js";
 import { drawOverlayGradient, drawGrain } from "./overlay.js";
 import { makeCoverTextLayer, buildDefaultCoverTextLayers } from "../layers/textLayer.js";
 import { makeCoverShapeLayer } from "../layers/shapeLayer.js";
+import { makeCoverImageLayer } from "../layers/imageLayer.js";
 import { clamp01 } from "../utils/math.js";
 
 // Espaço de coordenadas em que o editor trabalha (tamanhos de fonte, bordas etc.
@@ -34,7 +35,22 @@ export function getCoverImageDraw(frameW, frameH, imgW, imgH, focusX, focusY, sc
   return { drawW, drawH, dx, dy };
 }
 
+// O preview re-renderiza a cada edição; decodificar o fundo e as camadas de
+// imagem toda vez seria o gargalo. Guarda os últimos elementos decodificados.
+const imageCache = new Map();
+const IMAGE_CACHE_MAX = 16;
+
 export function loadImageFromDataUrl(dataUrl) {
+  const cached = imageCache.get(dataUrl);
+  if (cached) return cached;
+  const promise = decodeImage(dataUrl);
+  imageCache.set(dataUrl, promise);
+  promise.catch(() => imageCache.delete(dataUrl));
+  if (imageCache.size > IMAGE_CACHE_MAX) imageCache.delete(imageCache.keys().next().value);
+  return promise;
+}
+
+function decodeImage(dataUrl) {
   return new Promise((resolve, reject) => {
     try {
       const img = new Image();
@@ -55,7 +71,7 @@ export async function renderCoverDataUrl({
   fontColor, bgColor, bgImage,
   bgImageFocusX, bgImageFocusY, bgImageScale,
   bgFilter, overlay, borderEnabled, borderColor, borderWidth,
-  textLayers, shapeLayers,
+  textLayers, shapeLayers, imageLayers,
   renderText = true,
   textScale = 1,
   format = "jpeg",
@@ -112,6 +128,20 @@ export async function renderCoverDataUrl({
       })
     : [];
 
+  const scaledImageLayers = (Array.isArray(imageLayers) ? imageLayers : [])
+    .map((raw) => makeCoverImageLayer(raw))
+    .filter((l) => l.src && !l.hidden)
+    .map((l) => safeTextScale === 1 ? l : {
+      ...l,
+      shadowBlur: l.shadowBlur * safeTextScale,
+      shadowX: l.shadowX * safeTextScale,
+      shadowY: l.shadowY * safeTextScale,
+      glowSize: l.glowSize * safeTextScale,
+    });
+  const decodedImages = new Map(await Promise.all(
+    scaledImageLayers.map(async (l) => [l.id, await loadImageFromDataUrl(l.src).catch(() => null)])
+  ));
+
   const rawTextLayers = Array.isArray(textLayers) && textLayers.length
     ? textLayers.map((layer) => makeCoverTextLayer(layer))
     : buildDefaultCoverTextLayers({
@@ -148,13 +178,19 @@ export async function renderCoverDataUrl({
   // Formas e texto compartilham uma única pilha de profundidade (campo `order`),
   // então uma forma pode ficar na frente ou atrás de qualquer texto.
   const drawList = [
-    ...scaledShapeLayers.map((layer) => ({ kind: "shape", layer })),
-    ...(renderText ? scaledTextLayers.map((layer) => ({ kind: "text", layer })) : []),
+    ...scaledShapeLayers.filter((l) => !l.hidden).map((layer) => ({ kind: "shape", layer })),
+    ...scaledImageLayers.map((layer) => ({ kind: "image", layer })),
+    ...(renderText ? scaledTextLayers.filter((l) => !l.hidden).map((layer) => ({ kind: "text", layer })) : []),
   ].sort((a, b) => (Number(a.layer.order) || 0) - (Number(b.layer.order) || 0));
 
   for (const { kind, layer } of drawList) {
     if (kind === "shape") {
       drawShapeLayer(ctx, layer, width, height);
+      continue;
+    }
+    if (kind === "image") {
+      const img = decodedImages.get(layer.id);
+      if (img) drawImageLayer(ctx, layer, img, width, height);
       continue;
     }
     if (!String(layer.text || "").trim()) continue;
@@ -168,4 +204,27 @@ export async function renderCoverDataUrl({
   return format === "png"
     ? canvas.toDataURL("image/png")
     : canvas.toDataURL("image/jpeg", 0.9);
+}
+
+export function drawImageLayer(ctx, layer, img, width, height) {
+  const dw = width * (Number(layer.width) || 0.5);
+  const dh = dw * (Number(layer.aspect) || 1);
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, Number(layer.opacity) ?? 1));
+  ctx.translate(width * clamp01(layer.x), height * clamp01(layer.y));
+  if (layer.angle) ctx.rotate((Number(layer.angle) * Math.PI) / 180);
+  if (layer.flipX || layer.flipY) ctx.scale(layer.flipX ? -1 : 1, layer.flipY ? -1 : 1);
+  if ((Number(layer.glowSize) || 0) > 0) {
+    ctx.shadowColor = layer.glowColor || "#ffffff";
+    ctx.shadowBlur = Number(layer.glowSize);
+  } else if ((Number(layer.shadowBlur) || 0) > 0 || layer.shadowX || layer.shadowY) {
+    ctx.shadowColor = layer.shadowColor || "#000000";
+    ctx.shadowBlur = Number(layer.shadowBlur) || 0;
+    // Offsets de sombra ignoram a transformação do canvas: rotação e flip não
+    // mudam a direção da luz.
+    ctx.shadowOffsetX = Number(layer.shadowX) || 0;
+    ctx.shadowOffsetY = Number(layer.shadowY) || 0;
+  }
+  ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+  ctx.restore();
 }

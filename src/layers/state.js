@@ -2,6 +2,7 @@ import { defaultBgFilter } from "../canvas/filters.js";
 import { normalizeOverlay } from "../canvas/overlay.js";
 import { makeCoverTextLayer, buildDefaultCoverTextLayers } from "./textLayer.js";
 import { makeCoverShapeLayer } from "./shapeLayer.js";
+import { makeCoverImageLayer } from "./imageLayer.js";
 import { clamp01 } from "../utils/math.js";
 
 export const COVER_STATE_PERSIST_KEYS = [
@@ -12,7 +13,7 @@ export const COVER_STATE_PERSIST_KEYS = [
   "bgImageFocusX", "bgImageFocusY", "bgImageScale",
   "bgFilter", "overlay",
   "borderEnabled", "borderColor", "borderWidth",
-  "textLayers", "shapeLayers",
+  "textLayers", "shapeLayers", "imageLayers",
 ];
 
 export function ensureCoverCreatorState(data) {
@@ -29,6 +30,9 @@ export function ensureCoverCreatorState(data) {
     ? data.textLayers.map((layer) => makeCoverTextLayer(layer))
     : buildDefaultCoverTextLayers(data);
   let shapeLayers = rawShapeLayers.map((l) => makeCoverShapeLayer(l));
+  const imageLayers = (Array.isArray(data.imageLayers) ? data.imageLayers : [])
+    .map((l) => makeCoverImageLayer(l))
+    .filter((l) => l.src);
 
   if (!hadOrder) {
     let n = 0;
@@ -36,7 +40,7 @@ export function ensureCoverCreatorState(data) {
     textLayers = textLayers.map((l) => makeCoverTextLayer({ ...l, order: n++ }));
   }
 
-  const allIds = [...textLayers.map((l) => l.id), ...shapeLayers.map((l) => l.id)];
+  const allIds = [...textLayers, ...shapeLayers, ...imageLayers].map((l) => l.id);
   const activeLayerId = allIds.includes(data.activeLayerId)
     ? data.activeLayerId
     : textLayers[0]?.id || null;
@@ -44,6 +48,7 @@ export function ensureCoverCreatorState(data) {
     ...data,
     textLayers,
     shapeLayers,
+    imageLayers,
     activeLayerId,
     bgFilter: data.bgFilter && typeof data.bgFilter === "object"
       ? { ...defaultBgFilter(), ...data.bgFilter }
@@ -91,72 +96,145 @@ export function serializeCoverState(state) {
   return out;
 }
 
+// ── Operações genéricas sobre camadas (texto, forma, imagem) ────────────────
+
+const LAYER_KINDS = [
+  { kind: "text", key: "textLayers", make: makeCoverTextLayer },
+  { kind: "shape", key: "shapeLayers", make: makeCoverShapeLayer },
+  { kind: "image", key: "imageLayers", make: makeCoverImageLayer },
+];
+
+export function getAllCoverLayers(state) {
+  return LAYER_KINDS.flatMap(({ kind, key }) => (state?.[key] || []).map((layer) => ({ kind, layer })));
+}
+
+/** Camadas da mais ao fundo para a mais à frente. */
+export function getLayersByDepth(state) {
+  return getAllCoverLayers(state).sort((a, b) => (Number(a.layer.order) || 0) - (Number(b.layer.order) || 0));
+}
+
+export function findCoverLayer(state, layerId) {
+  return getAllCoverLayers(state).find(({ layer }) => layer.id === layerId) || null;
+}
+
+/** Aplica `patch` a várias camadas de qualquer tipo de uma vez: Map<id, patch>. */
+function patchLayers(state, patches) {
+  const next = { ...state };
+  for (const { key, make } of LAYER_KINDS) {
+    const list = state[key] || [];
+    if (!list.some((l) => patches.has(l.id))) continue;
+    next[key] = list.map((l) => (patches.has(l.id) ? make({ ...l, ...patches.get(l.id) }) : l));
+  }
+  // Título/autor espelham o texto das camadas correspondentes.
+  const title = (next.textLayers || []).find((l) => l.role === "title");
+  const author = (next.textLayers || []).find((l) => l.role === "author");
+  if (title) next.title = title.text;
+  if (author) next.author = author.text;
+  return next;
+}
+
+export function patchCoverLayer(state, layerId, patch) {
+  if (!state) return state;
+  return patchLayers(state, new Map([[layerId, patch]]));
+}
+
+export function canDeleteCoverLayer(state, layerId) {
+  const found = findCoverLayer(state, layerId);
+  if (!found) return false;
+  return !(found.kind === "text" && (found.layer.role === "title" || found.layer.role === "author"));
+}
+
+export function deleteCoverLayer(state, layerId) {
+  if (!state || !canDeleteCoverLayer(state, layerId)) return state;
+  const next = { ...state };
+  for (const { key } of LAYER_KINDS) {
+    if ((state[key] || []).some((l) => l.id === layerId)) next[key] = state[key].filter((l) => l.id !== layerId);
+  }
+  if (next.activeLayerId === layerId) {
+    const remaining = getLayersByDepth(next);
+    next.activeLayerId = remaining[remaining.length - 1]?.layer.id || null;
+  }
+  return next;
+}
+
 export function reorderCoverLayer(state, layerId, action) {
   if (!state) return state;
-  const text = state.textLayers || [];
-  const shapes = state.shapeLayers || [];
-  const combined = [
-    ...shapes.map((l) => ({ id: l.id, kind: "shape", order: Number(l.order) || 0 })),
-    ...text.map((l) => ({ id: l.id, kind: "text", order: Number(l.order) || 0 })),
-  ].sort((a, b) => a.order - b.order);
-
+  const combined = getLayersByDepth(state).map(({ layer }) => ({ id: layer.id, order: Number(layer.order) || 0 }));
   const idx = combined.findIndex((l) => l.id === layerId);
   if (idx === -1) return state;
 
   const orders = combined.map((l) => l.order);
-  const patch = new Map();
+  const patches = new Map();
   if (action === "front") {
-    patch.set(layerId, Math.max(...orders) + 1);
+    patches.set(layerId, { order: Math.max(...orders) + 1 });
   } else if (action === "back") {
-    patch.set(layerId, Math.min(...orders) - 1);
+    patches.set(layerId, { order: Math.min(...orders) - 1 });
   } else if (action === "forward" && idx < combined.length - 1) {
-    patch.set(layerId, combined[idx + 1].order);
-    patch.set(combined[idx + 1].id, combined[idx].order);
+    patches.set(layerId, { order: combined[idx + 1].order });
+    patches.set(combined[idx + 1].id, { order: combined[idx].order });
   } else if (action === "backward" && idx > 0) {
-    patch.set(layerId, combined[idx - 1].order);
-    patch.set(combined[idx - 1].id, combined[idx].order);
+    patches.set(layerId, { order: combined[idx - 1].order });
+    patches.set(combined[idx - 1].id, { order: combined[idx].order });
   }
-  if (!patch.size) return state;
+  return patches.size ? patchLayers(state, patches) : state;
+}
 
-  return {
-    ...state,
-    textLayers: text.map((l) => (patch.has(l.id) ? makeCoverTextLayer({ ...l, order: patch.get(l.id) }) : l)),
-    shapeLayers: shapes.map((l) => (patch.has(l.id) ? makeCoverShapeLayer({ ...l, order: patch.get(l.id) }) : l)),
-  };
+/**
+ * Move a camada para a posição `toIndex` na pilha (0 = mais ao fundo) e
+ * renumera todas as ordens em sequência — usado pelo arrastar do painel.
+ */
+export function moveCoverLayerToIndex(state, layerId, toIndex) {
+  if (!state) return state;
+  const ids = getLayersByDepth(state).map(({ layer }) => layer.id);
+  const from = ids.indexOf(layerId);
+  if (from === -1) return state;
+  ids.splice(from, 1);
+  ids.splice(Math.max(0, Math.min(ids.length, toIndex)), 0, layerId);
+  return patchLayers(state, new Map(ids.map((id, i) => [id, { order: i }])));
 }
 
 export function duplicateCoverLayer(state, layerId) {
   if (!state) return state;
-  const text = state.textLayers || [];
-  const shapes = state.shapeLayers || [];
-  const maxOrder = [...text, ...shapes].reduce((max, l) => Math.max(max, Number(l.order) || 0), 0);
+  const found = findCoverLayer(state, layerId);
+  if (!found) return state;
+  const maxOrder = getAllCoverLayers(state).reduce((max, { layer }) => Math.max(max, Number(layer.order) || 0), 0);
+  const { key, make } = LAYER_KINDS.find((k) => k.kind === found.kind);
+  const src = found.layer;
+  const copy = make({
+    ...src,
+    id: undefined,
+    ...(found.kind === "text" && (src.role === "title" || src.role === "author") ? { role: "custom" } : {}),
+    name: src.name ? `${src.name} copy` : "",
+    locked: false,
+    x: clamp01((src.x ?? 0.5) + 0.03),
+    y: clamp01((src.y ?? 0.5) + 0.03),
+    order: maxOrder + 1,
+  });
+  return { ...state, [key]: [...(state[key] || []), copy], activeLayerId: copy.id };
+}
 
-  const textSrc = text.find((l) => l.id === layerId);
-  if (textSrc) {
-    const copy = makeCoverTextLayer({
-      ...textSrc,
-      id: undefined,
-      role: textSrc.role === "title" || textSrc.role === "author" ? "custom" : textSrc.role,
-      x: clamp01((textSrc.x ?? 0.5) + 0.03),
-      y: clamp01((textSrc.y ?? 0.5) + 0.03),
-      order: maxOrder + 1,
-    });
-    return { ...state, textLayers: [...text, copy], activeLayerId: copy.id };
+export function addImageCoverLayer(state, { src, aspect, name }) {
+  if (!state || !src) return state;
+  const maxOrder = getAllCoverLayers(state).reduce((max, { layer }) => Math.max(max, Number(layer.order) || 0), 0);
+  // Cabe inteira na capa: largura limitada também pela altura disponível.
+  const coverRatio = 1080 / 720;
+  const width = Math.min(0.6, (0.6 * coverRatio) / Math.max(0.01, aspect));
+  const layer = makeCoverImageLayer({ src, aspect, name, width, order: maxOrder + 1 });
+  return { ...state, imageLayers: [...(state.imageLayers || []), layer], activeLayerId: layer.id };
+}
+
+/** Rótulo curto para listas de camadas. */
+export function describeCoverLayer(kind, layer) {
+  if (layer.name) return layer.name;
+  if (kind === "image") return "Image";
+  if (kind === "shape") {
+    return { rect: "Rectangle", circle: "Circle", line: "Line", triangle: "Triangle", diamond: "Diamond" }[layer.shape] || "Shape";
   }
-
-  const shapeSrc = shapes.find((l) => l.id === layerId);
-  if (shapeSrc) {
-    const copy = makeCoverShapeLayer({
-      ...shapeSrc,
-      id: undefined,
-      x: clamp01((shapeSrc.x ?? 0.5) + 0.03),
-      y: clamp01((shapeSrc.y ?? 0.5) + 0.03),
-      order: maxOrder + 1,
-    });
-    return { ...state, shapeLayers: [...shapes, copy], activeLayerId: copy.id };
-  }
-
-  return state;
+  if (layer.role === "title") return "Title";
+  if (layer.role === "author") return "Author";
+  const text = String(layer.text || "").replace(/\s+/g, " ").trim();
+  if (layer.role === "symbol") return `Symbol ${text}`.trim();
+  return text ? (text.length > 22 ? `${text.slice(0, 22)}…` : text) : "Text";
 }
 
 export async function loadCoverStateFromProject(projectRoot) {

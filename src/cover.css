@@ -195,6 +195,81 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 .ccExportOption.isActive { border-color: var(--ui-accent, #6ea8fe); background: rgba(110,168,254,0.12); }
 .ccExportDims { font-size: 10.5px; color: var(--ui-muted, rgba(255,255,255,0.45)); font-variant-numeric: tabular-nums; }
 
+/* Camadas: estados e miniaturas */
+.ccSidebarLayer.isHidden { opacity: 0.4; }
+.ccLayerThumbImg { width: 100%; height: 100%; object-fit: cover; border-radius: 4px; display: block; }
+.ccLayersBtn { color: var(--ui-muted, rgba(255,255,255,0.6)); display: inline-flex; align-items: center; justify-content: center; margin-bottom: 2px; }
+.ccLayersBtn.isActive { color: var(--ui-accent, #6ea8fe); }
+.coverCreatorShapeHandle.isLocked,
+.coverCreatorTextHandle.isLocked { cursor: default; }
+
+.ccLayersPanel { min-width: 250px; max-width: 290px; }
+.ccLayersRows { display: flex; flex-direction: column; gap: 2px; max-height: 360px; overflow-y: auto; }
+.ccLayerRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  position: relative;
+  user-select: none;
+}
+.ccLayerRow:hover { background: rgba(255,255,255,0.06); }
+.ccLayerRow.isActive { background: rgba(110,168,254,0.14); border-color: rgba(110,168,254,0.35); }
+.ccLayerRow.isHidden .ccLayerRowName,
+.ccLayerRow.isHidden .ccLayerRowThumb { opacity: 0.4; }
+.ccLayerRow.isDragging { opacity: 0.35; }
+.ccLayerRow.dropBefore::before,
+.ccLayerRow.dropAfter::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ui-accent, #6ea8fe);
+}
+.ccLayerRow.dropBefore::before { top: -2px; }
+.ccLayerRow.dropAfter::after { bottom: -2px; }
+.ccLayerRowThumb {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  background: rgba(255,255,255,0.06);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  overflow: hidden;
+}
+.ccLayerRowName { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ccLayerRename {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid var(--ui-accent, #6ea8fe);
+  border-radius: 5px;
+  color: var(--ui-text, #eaeaea);
+  padding: 2px 5px;
+}
+.ccLayerRowBtn {
+  background: none;
+  border: none;
+  color: var(--ui-muted, rgba(255,255,255,0.45));
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 5px;
+  display: inline-flex;
+}
+.ccLayerRowBtn:hover { background: rgba(255,255,255,0.1); color: var(--ui-text, #eaeaea); }
+.ccLayerRowBtn.isOff { color: rgba(255,255,255,0.3); }
+.ccLayerRowBtn.isOn { color: #fbbf24; }
+.ccImageLayerPreview { max-width: 200px; max-height: 120px; object-fit: contain; border-radius: 6px; background: repeating-conic-gradient(rgba(255,255,255,0.08) 0 25%, transparent 0 50%) 0 0 / 12px 12px; }
+
 /* Paleta sugerida + conta-gotas */
 .ccSwatchRow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .ccSwatch, .ccSwatchPick {
@@ -314,8 +389,14 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   margin-bottom: 4px;
   max-height: 200px;
   overflow-y: auto;
-  overflow-x: visible;
+  /* overflow-x: visible vira auto quando o eixo Y rola — daí a barra horizontal. */
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.18) transparent;
 }
+.ccSidebarLayers::-webkit-scrollbar { width: 4px; }
+.ccSidebarLayers::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 2px; }
+.ccSidebarLayers::-webkit-scrollbar-button { display: none; height: 0; }
 .ccSidebarLayer {
   width: 38px;
   height: 32px;

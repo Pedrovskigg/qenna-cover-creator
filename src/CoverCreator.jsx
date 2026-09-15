@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import CoverCropper from "./CoverCropper.jsx";
 import CcKnob from "./ui/CcKnob.jsx";
-import { IconX, IconFilter, IconMaximize, IconDownload, IconBevel, IconShadow, IconGlow, IconStroke, IconTransform, IconBorderFrame, IconSave, IconTrash, IconImage, IconSettings, IconSparkle, IconUndo, IconRedo, IconCopy, IconLayersOrder, IconTextVertical, IconTextHorizontal, IconOverlay, IconEyedropper, IconThumbnail, IconWarning } from "./icons/index.jsx";
+import { IconX, IconFilter, IconMaximize, IconDownload, IconBevel, IconShadow, IconGlow, IconStroke, IconTransform, IconBorderFrame, IconSave, IconTrash, IconImage, IconSettings, IconSparkle, IconUndo, IconRedo, IconCopy, IconLayersOrder, IconTextVertical, IconTextHorizontal, IconOverlay, IconEyedropper, IconThumbnail, IconWarning, IconEye, IconEyeOff, IconLock, IconUnlock, IconFlip } from "./icons/index.jsx";
 import { extractPaletteFromImageData, measureTextContrast } from "./utils/palette.js";
 import { COVER_FONT_OPTIONS } from "./data/fonts.js";
 import { COVER_EMOJI_PICKS } from "./data/symbols.js";
@@ -11,7 +11,12 @@ import { clamp01 } from "./utils/math.js";
 import { defaultBgFilter, buildImageFilterString } from "./canvas/filters.js";
 import { makeCoverTextLayer, applyCoverLayerPatch, addCustomCoverLayer, addSymbolCoverLayer } from "./layers/textLayer.js";
 import { makeCoverShapeLayer, applyCoverShapePatch, addShapeCoverLayer } from "./layers/shapeLayer.js";
-import { ensureCoverCreatorState, createCoverCreatorState, serializeCoverState, loadCoverStateFromProject, reorderCoverLayer, duplicateCoverLayer } from "./layers/state.js";
+import {
+  ensureCoverCreatorState, createCoverCreatorState, serializeCoverState, loadCoverStateFromProject,
+  reorderCoverLayer, duplicateCoverLayer, getAllCoverLayers, getLayersByDepth, findCoverLayer,
+  patchCoverLayer, deleteCoverLayer, canDeleteCoverLayer, moveCoverLayerToIndex, addImageCoverLayer, describeCoverLayer,
+} from "./layers/state.js";
+import { prepareImageFile, imageLayerHeightFrac } from "./layers/imageLayer.js";
 import { renderCoverDataUrl, COVER_BASE_WIDTH, COVER_BASE_HEIGHT, COVER_EXPORT_PRESETS } from "./canvas/render.js";
 import { buildFontString, layoutTextLayer } from "./canvas/text.js";
 import { normalizeOverlay } from "./canvas/overlay.js";
@@ -255,11 +260,15 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
   const [openPanel, setOpenPanel] = useState(null);
   const [showAiSettings, setShowAiSettings] = useState(false);
   const [showThumb, setShowThumb] = useState(false);
+  const imageLayerInputRef = useRef(null);
 
   const safeCreator = ensureCoverCreatorState(creator);
-  const allLayers = [...(safeCreator?.textLayers || []), ...(safeCreator?.shapeLayers || [])];
-  const selectedLayer = allLayers.find((l) => l.id === safeCreator?.activeLayerId) || safeCreator?.textLayers?.[0] || null;
-  const selectedIsShape = selectedLayer?.type === "shape";
+  const selectedFound = findCoverLayer(safeCreator, safeCreator?.activeLayerId)
+    || (safeCreator?.textLayers?.[0] ? { kind: "text", layer: safeCreator.textLayers[0] } : null);
+  const selectedLayer = selectedFound?.layer || null;
+  const selectedKind = selectedFound?.kind || null;
+  const selectedIsShape = selectedKind === "shape";
+  const selectedIsText = selectedKind === "text";
 
   // Carrega imagens base do app
   useEffect(() => {
@@ -290,8 +299,8 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
 
   // Sincroniza input de tamanho de fonte com a camada selecionada
   useEffect(() => {
-    if (selectedLayer && !selectedIsShape) setFontSizeInput(String(selectedLayer.fontSize));
-  }, [selectedLayer?.id, selectedLayer?.fontSize, selectedIsShape]);
+    if (selectedLayer && selectedIsText) setFontSizeInput(String(selectedLayer.fontSize));
+  }, [selectedLayer?.id, selectedLayer?.fontSize, selectedIsText]);
 
   // Reseta aba ao trocar de camada
   useEffect(() => { setOpenPanel(null); }, [safeCreator?.activeLayerId]);
@@ -351,6 +360,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
     safeCreator?.bgColor, safeCreator?.bgImage?.length, safeCreator?.bgImage?.slice(-64),
     safeCreator?.bgImageFocusX, safeCreator?.bgImageFocusY, safeCreator?.bgImageScale,
     safeCreator?.bgFilter, safeCreator?.overlay, safeCreator?.shapeLayers,
+    (safeCreator?.imageLayers || []).map((l) => [l.id, l.x, l.y, l.width, l.angle, l.opacity, l.hidden, l.flipX, l.flipY, l.order]),
   ]);
   useEffect(() => {
     if (!safeCreator) return;
@@ -386,7 +396,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
   }, [bgAnalysisKey]);
 
   const selectedContrast = useMemo(() => {
-    if (!selectedLayer || selectedIsShape || !bgAnalysis.data) return null;
+    if (!selectedLayer || !selectedIsText || !bgAnalysis.data) return null;
     const box = previewTextBoxes[selectedLayer.id];
     if (!box) return null;
     const bevel = selectedLayer.bevel || "none";
@@ -401,7 +411,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
       || (Number(selectedLayer.glowSize) || 0) >= 4
       || (Number(selectedLayer.shadowBlur) || 0) >= 4;
     return { ratio, low: ratio < 3 && !mitigated };
-  }, [selectedLayer, selectedIsShape, bgAnalysis.data, previewTextBoxes]);
+  }, [selectedLayer, selectedIsText, bgAnalysis.data, previewTextBoxes]);
 
   const commit = useCallback((updater) => {
     onChange((prev) => {
@@ -413,9 +423,8 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
 
   const updateSelectedLayer = useCallback((patch) => {
     if (!selectedLayer) return;
-    if (selectedIsShape) commit((prev) => applyCoverShapePatch(prev, selectedLayer.id, patch));
-    else commit((prev) => applyCoverLayerPatch(prev, selectedLayer.id, patch));
-  }, [commit, selectedLayer, selectedIsShape]);
+    commit((prev) => patchCoverLayer(prev, selectedLayer.id, patch));
+  }, [commit, selectedLayer]);
 
   // Drag de camadas no preview
   const handleLayerMouseDown = useCallback((event, layerId) => {
@@ -424,13 +433,13 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
     event.stopPropagation();
     commit((prev) => ({ ...prev, activeLayerId: layerId }));
     const current = ensureCoverCreatorState(safeCreator);
-    const allL = [...(current.textLayers || []), ...(current.shapeLayers || [])];
+    const allL = getAllCoverLayers(current).map(({ layer: l }) => l);
     const layer = allL.find((item) => item.id === layerId);
-    if (!layer) return;
+    // Camada travada: o clique só seleciona.
+    if (!layer || layer.locked) return;
     const rect = previewRef.current.getBoundingClientRect();
     dragRef.current = {
       layerId,
-      isShape: layer.type === "shape",
       dx: (event.clientX - rect.left) - clamp01(layer.x) * rect.width,
       dy: (event.clientY - rect.top) - clamp01(layer.y) * rect.height,
     };
@@ -439,7 +448,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
     // Alinha com o centro do canvas e também com a posição de qualquer outra
     // camada, não só o centro — assim dá pra centralizar um elemento em
     // relação a outro, não só em relação à capa inteira.
-    const others = allL.filter((item) => item.id !== layerId);
+    const others = allL.filter((item) => item.id !== layerId && !item.hidden);
     const snapTargetsX = [0.5, ...others.map((item) => clamp01(item.x))];
     const snapTargetsY = [0.5, ...others.map((item) => clamp01(item.y))];
     const onMove = (e) => {
@@ -455,12 +464,9 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
       if (centerGuideTimerRef.current) clearTimeout(centerGuideTimerRef.current);
       if (guide) centerGuideTimerRef.current = setTimeout(() => setCenterGuide(null), 600);
       if (dragRafRef.current) return;
-      const isShape = dragRef.current.isShape;
       dragRafRef.current = requestAnimationFrame(() => {
         dragRafRef.current = 0;
-        commit((prev) => isShape
-          ? applyCoverShapePatch(prev, layerId, { x, y })
-          : applyCoverLayerPatch(prev, layerId, { x, y }));
+        commit((prev) => patchCoverLayer(prev, layerId, { x, y }));
       });
     };
     const onUp = () => {
@@ -483,7 +489,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
 
     const current = ensureCoverCreatorState(safeCreator);
     const layer = (current.shapeLayers || []).find((l) => l.id === layerId);
-    if (!layer) return;
+    if (!layer || layer.locked) return;
 
     const cx = clamp01(layer.x);
     const cy = clamp01(layer.y);
@@ -526,14 +532,52 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
     window.addEventListener("mouseup",   onUp);
   }, [commit, safeCreator]);
 
+  // Resize de imagem pelos cantos — sempre proporcional; o canto oposto fica fixo.
+  const handleImageCornerMouseDown = useCallback((event, layerId, corner) => {
+    if (!previewRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const layer = (safeCreator.imageLayers || []).find((l) => l.id === layerId);
+    if (!layer || layer.locked) return;
+    const toH = (w) => w * layer.aspect * (COVER_BASE_WIDTH / COVER_BASE_HEIGHT);
+    const w0 = layer.width;
+    const h0 = toH(w0);
+    const sx = corner === "tl" || corner === "bl" ? -1 : 1;
+    const sy = corner === "tl" || corner === "tr" ? -1 : 1;
+    const ax = layer.x - (sx * w0) / 2;
+    const ay = layer.y - (sy * h0) / 2;
+
+    const onMove = (e) => {
+      const b = previewRef.current.getBoundingClientRect();
+      const mx = (e.clientX - b.left) / b.width;
+      const my = (e.clientY - b.top) / b.height;
+      // Usa o eixo que o mouse mais "puxou", convertido para largura.
+      const byX = Math.max(0, (mx - ax) * sx);
+      const byY = Math.max(0, (my - ay) * sy) / (layer.aspect * (COVER_BASE_WIDTH / COVER_BASE_HEIGHT));
+      const newW = Math.max(0.03, Math.min(3, Math.max(byX, byY)));
+      const newH = toH(newW);
+      commit((prev) => patchCoverLayer(prev, layerId, {
+        width: newW,
+        x: ax + (sx * newW) / 2,
+        y: ay + (sy * newH) / 2,
+      }));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [commit, safeCreator]);
+
   // Rotação por arraste (texto e forma) — o handle fica preso ao topo da caixa
   // do elemento, então o pivô é o centro do retângulo daquele handle.
-  const handleRotateMouseDown = useCallback((event, layerId, isShape) => {
+  const handleRotateMouseDown = useCallback((event, layerId) => {
     event.preventDefault();
     event.stopPropagation();
     if (!previewRef.current) return;
-    const layer = [...(safeCreator.textLayers || []), ...(safeCreator.shapeLayers || [])].find((l) => l.id === layerId);
-    if (!layer) return;
+    const layer = findCoverLayer(safeCreator, layerId)?.layer;
+    if (!layer || layer.locked) return;
     // Pivô = âncora da camada, que é o ponto em torno do qual o render gira
     // (centro da forma; topo-centro do texto).
     const rect = previewRef.current.getBoundingClientRect();
@@ -550,9 +594,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
       let deg = startAngle + (pointer - startPointer);
       deg = ((deg + 180) % 360 + 360) % 360 - 180;
       if (e.shiftKey) deg = Math.round(deg / 15) * 15;
-      commit((prev) => isShape
-        ? applyCoverShapePatch(prev, layerId, { angle: deg })
-        : applyCoverLayerPatch(prev, layerId, { angle: deg }));
+      commit((prev) => patchCoverLayer(prev, layerId, { angle: deg }));
     };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
@@ -575,7 +617,8 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
     const startDist = Math.hypot(box.width, box.height) || 1;
     const current = ensureCoverCreatorState(safeCreator);
     const layer = (current.textLayers || []).find((l) => l.id === layerId);
-    const startFontSize = Number(layer?.fontSize) || 56;
+    if (!layer || layer.locked) return;
+    const startFontSize = Number(layer.fontSize) || 56;
 
     const onMove = (e) => {
       const dist = Math.hypot(e.clientX - anchorX, e.clientY - anchorY);
@@ -617,21 +660,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
         if (inField) return;
         if (!safeCreator?.activeLayerId) return;
         e.preventDefault();
-        commit((prev) => {
-          const id = prev.activeLayerId;
-          const textLayer = (prev.textLayers || []).find((l) => l.id === id);
-          if (textLayer) {
-            if (textLayer.role === "title" || textLayer.role === "author") return prev;
-            const next = (prev.textLayers || []).filter((l) => l.id !== id);
-            return { ...prev, textLayers: next, activeLayerId: next[0]?.id || (prev.shapeLayers || [])[0]?.id || null };
-          }
-          const shapeLayer = (prev.shapeLayers || []).find((l) => l.id === id);
-          if (shapeLayer) {
-            const next = (prev.shapeLayers || []).filter((l) => l.id !== id);
-            return { ...prev, shapeLayers: next, activeLayerId: (prev.textLayers || [])[0]?.id || next[0]?.id || null };
-          }
-          return prev;
-        });
+        commit((prev) => deleteCoverLayer(prev, prev.activeLayerId));
         return;
       }
 
@@ -643,12 +672,9 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
         const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
         const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
         commit((prev) => {
-          const id = prev.activeLayerId;
-          const isShape = (prev.shapeLayers || []).some((l) => l.id === id);
-          const layer = (isShape ? prev.shapeLayers : prev.textLayers || []).find((l) => l.id === id);
-          if (!layer) return prev;
-          const patch = { x: clamp01((Number(layer.x) || 0.5) + dx), y: clamp01((Number(layer.y) || 0.5) + dy) };
-          return isShape ? applyCoverShapePatch(prev, id, patch) : applyCoverLayerPatch(prev, id, patch);
+          const layer = findCoverLayer(prev, prev.activeLayerId)?.layer;
+          if (!layer || layer.locked) return prev;
+          return patchCoverLayer(prev, layer.id, { x: clamp01((Number(layer.x) || 0.5) + dx), y: clamp01((Number(layer.y) || 0.5) + dy) });
         });
       }
     };
@@ -728,11 +754,12 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                   {centerGuide?.y != null && <div className="coverCenterGuideH" style={{ top: `${centerGuide.y * 100}%` }} />}
 
                   {/* Handles de formas */}
-                  {(safeCreator.shapeLayers || []).map((layer) => {
+                  {(safeCreator.shapeLayers || []).filter((l) => !l.hidden).map((layer) => {
                     const isActive = safeCreator.activeLayerId === layer.id;
+                    const editable = isActive && !layer.locked;
                     return (
                       <div key={layer.id}
-                        className={`coverCreatorShapeHandle ${isActive ? "isActive" : ""}`.trim()}
+                        className={`coverCreatorShapeHandle ${isActive ? "isActive" : ""} ${layer.locked ? "isLocked" : ""}`.trim()}
                         style={{
                           left: `${clamp01(layer.x) * 100}%`, top: `${clamp01(layer.y) * 100}%`,
                           width: `${(Number(layer.width) || 0.5) * 100}%`, height: `${(Number(layer.height) || 0.04) * 100}%`,
@@ -745,15 +772,47 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                         onMouseDown={(e) => handleLayerMouseDown(e, layer.id)}
                         onClick={() => commit((prev) => ({ ...prev, activeLayerId: layer.id }))}
                       >
-                        {isActive && ["tl", "tr", "bl", "br"].map((corner) => (
+                        {editable && ["tl", "tr", "bl", "br"].map((corner) => (
                           <div key={corner}
                             className={`ccShapeResizeHandle ccShapeResizeHandle--${corner}`}
                             onMouseDown={(e) => handleCornerMouseDown(e, layer.id, corner)}
                           />
                         ))}
-                        {isActive && (
+                        {editable && (
                           <div className="ccRotateHandle" title="Drag to rotate (Shift = 15° steps)"
-                            onMouseDown={(e) => handleRotateMouseDown(e, layer.id, true)} />
+                            onMouseDown={(e) => handleRotateMouseDown(e, layer.id)} />
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* Handles de imagens */}
+                  {(safeCreator.imageLayers || []).filter((l) => !l.hidden).map((layer) => {
+                    const isActive = safeCreator.activeLayerId === layer.id;
+                    const editable = isActive && !layer.locked;
+                    return (
+                      <div key={layer.id}
+                        className={`coverCreatorShapeHandle ${isActive ? "isActive" : ""} ${layer.locked ? "isLocked" : ""}`.trim()}
+                        title={describeCoverLayer("image", layer)}
+                        style={{
+                          left: `${clamp01(layer.x) * 100}%`, top: `${clamp01(layer.y) * 100}%`,
+                          width: `${layer.width * 100}%`,
+                          height: `${imageLayerHeightFrac(layer, COVER_BASE_WIDTH, COVER_BASE_HEIGHT) * 100}%`,
+                          transform: layer.angle ? `translate(-50%, -50%) rotate(${Number(layer.angle)}deg)` : undefined,
+                          outline: isActive ? "2px solid var(--ui-accent,#6ea8fe)" : "1px dashed rgba(255,255,255,0.22)",
+                          outlineOffset: "1px",
+                        }}
+                        onMouseDown={(e) => handleLayerMouseDown(e, layer.id)}
+                      >
+                        {editable && ["tl", "tr", "bl", "br"].map((corner) => (
+                          <div key={corner}
+                            className={`ccShapeResizeHandle ccShapeResizeHandle--${corner}`}
+                            onMouseDown={(e) => handleImageCornerMouseDown(e, layer.id, corner)}
+                          />
+                        ))}
+                        {editable && (
+                          <div className="ccRotateHandle" title="Drag to rotate (Shift = 15° steps)"
+                            onMouseDown={(e) => handleRotateMouseDown(e, layer.id)} />
                         )}
                       </div>
                     );
@@ -761,15 +820,16 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
 
                   {/* Handles de texto */}
                   <div className="coverCreatorTextOverlay">
-                    {(safeCreator.textLayers || []).map((layer) => {
+                    {(safeCreator.textLayers || []).filter((l) => !l.hidden).map((layer) => {
                       const isActive = safeCreator.activeLayerId === layer.id;
+                      const editable = isActive && !layer.locked;
                       const box = previewTextBoxes[layer.id];
                       if (!box) return null;
                       // Âncora nem sempre é o topo da caixa (texto em tigela sobe acima dela).
                       const originX = box.w > 0 ? ((box.anchorX - box.x) / box.w) * 100 : 50;
                       const originY = box.h > 0 ? ((box.anchorY - box.y) / box.h) * 100 : 0;
                       return (
-                        <div key={layer.id} className={`coverCreatorTextHandle ${isActive ? "isActive" : ""}`.trim()}
+                        <div key={layer.id} className={`coverCreatorTextHandle ${isActive ? "isActive" : ""} ${layer.locked ? "isLocked" : ""}`.trim()}
                           title={layer.text || "Text"}
                           style={{
                             left: `${(box.x / COVER_BASE_WIDTH) * 100}%`,
@@ -782,12 +842,12 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                           onMouseDown={(e) => handleLayerMouseDown(e, layer.id)}
                           onClick={() => commit((prev) => ({ ...prev, activeLayerId: layer.id }))}
                         >
-                          {isActive && (
+                          {editable && (
                             <>
                               <div className="ccTextResizeHandle" title="Drag to scale font size"
                                 onMouseDown={(e) => handleTextCornerMouseDown(e, layer.id)} />
                               <div className="ccRotateHandle" title="Drag to rotate (Shift = 15° steps)"
-                                onMouseDown={(e) => handleRotateMouseDown(e, layer.id, false)} />
+                                onMouseDown={(e) => handleRotateMouseDown(e, layer.id)} />
                             </>
                           )}
                         </div>
@@ -836,13 +896,31 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
               onAddText={() => { commit((p) => addCustomCoverLayer(p)); setOpenPanel(null); }}
               onAddSymbol={() => { commit((p) => addSymbolCoverLayer(p)); setOpenPanel("font"); }}
               onAddShape={(s) => { commit((p) => addShapeCoverLayer(p, s)); setOpenPanel(null); }}
+              onAddImage={() => { imageLayerInputRef.current?.click(); setOpenPanel(null); }}
+              onToggleLayersPanel={(e) => { e.stopPropagation(); togglePanel("layers"); }}
+              layersPanel={openPanel === "layers" && (
+                <LayersPanel safeCreator={safeCreator} commit={commit} />
+              )}
             />
+            <input ref={imageLayerInputRef} type="file" accept="image/*" style={{ display: "none" }}
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (!file) return;
+                try {
+                  const prepared = await prepareImageFile(file);
+                  commit((p) => addImageCoverLayer(p, prepared));
+                } catch (err) {
+                  console.error("image layer load failed", err);
+                }
+              }} />
 
             <div className="ccSidebarDivider" />
 
             {selectedLayer && (
               <LayerTools
                 selectedLayer={selectedLayer}
+                selectedKind={selectedKind}
                 selectedIsShape={selectedIsShape}
                 safeCreator={safeCreator}
                 openPanel={openPanel}
@@ -863,7 +941,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
               <button className={`ccSidebarTool ${openPanel === "image" || safeCreator.bgImage ? "isActive" : ""}`}
                 onClick={(e) => { e.stopPropagation(); togglePanel("image"); }}>
                 <IconImage size={16} />
-                <span className="ccSidebarToolLabel">Image</span>
+                <span className="ccSidebarToolLabel">Bg</span>
               </button>
               {openPanel === "image" && (
                 <div className="ccPopover">
@@ -965,29 +1043,45 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
 
 // ── Sub-componentes ────────────────────────────────────────────────────────────
 
-function LayerList({ safeCreator, openPanel, onSelectLayer, onAddMenu, onAddText, onAddSymbol, onAddShape }) {
+function layerGlyph(kind, layer) {
+  if (kind === "image") return null;
+  if (kind === "shape") {
+    return layer.shape === "circle" ? "◯" : layer.shape === "line" ? "—" : layer.shape === "triangle" ? "△" : layer.shape === "diamond" ? "◇" : "▭";
+  }
+  if (layer.role === "title") return "T";
+  if (layer.role === "author") return "A";
+  if (layer.role === "symbol") return (layer.text || "*").slice(0, 1);
+  return (layer.text || "t").slice(0, 2);
+}
+
+function LayerThumb({ kind, layer }) {
+  if (kind === "image") return <img className="ccLayerThumbImg" src={layer.src} alt="" />;
+  return <span>{layerGlyph(kind, layer)}</span>;
+}
+
+function LayerList({ safeCreator, openPanel, onSelectLayer, onAddMenu, onAddText, onAddSymbol, onAddShape, onAddImage, onToggleLayersPanel, layersPanel }) {
+  // Da mais à frente para a mais ao fundo, como em qualquer editor de camadas.
+  const layers = getLayersByDepth(safeCreator).reverse();
   return (
     <>
       <div className="ccSidebarLayers">
-        {(safeCreator.textLayers || []).map((layer) => (
+        {layers.map(({ kind, layer }) => (
           <button key={layer.id}
-            className={`ccSidebarLayer ${safeCreator.activeLayerId === layer.id ? "isActive" : ""}`}
+            className={`ccSidebarLayer ${safeCreator.activeLayerId === layer.id ? "isActive" : ""} ${layer.hidden ? "isHidden" : ""}`.trim()}
             onClick={() => onSelectLayer(layer.id)}
-            title={layer.role === "title" ? "Title" : layer.role === "author" ? "Author" : layer.text || "Text"}>
-            {layer.role === "title" ? "T" : layer.role === "author" ? "A" : layer.role === "symbol" ? (layer.text || "*").slice(0, 1) : (layer.text || "t").slice(0, 2)}
-          </button>
-        ))}
-        {(safeCreator.shapeLayers || []).map((layer) => (
-          <button key={layer.id}
-            className={`ccSidebarLayer ${safeCreator.activeLayerId === layer.id ? "isActive" : ""}`}
-            onClick={() => onSelectLayer(layer.id)}
-            title={layer.shape}>
-            {layer.shape === "circle" ? "◯" : layer.shape === "line" ? "—" : layer.shape === "triangle" ? "△" : layer.shape === "diamond" ? "◇" : "▭"}
+            title={describeCoverLayer(kind, layer)}>
+            <LayerThumb kind={kind} layer={layer} />
           </button>
         ))}
       </div>
 
-      {/* Botão + fora do scroll para o popover não ser cortado pelo overflow */}
+      {/* Botões fora do scroll para os popovers não serem cortados pelo overflow */}
+      <div className="ccPopoverWrap">
+        <button className={`ccSidebarLayer ccLayersBtn ${openPanel === "layers" ? "isActive" : ""}`} title="Layers" onClick={onToggleLayersPanel}>
+          <IconLayersOrder size={15} />
+        </button>
+        {layersPanel}
+      </div>
       <div className="ccPopoverWrap">
         <button className="ccSidebarLayer"
           style={{ fontSize: 18, color: "var(--ui-accent,#6ea8fe)", background: "rgba(110,168,254,0.08)", border: "1px dashed rgba(110,168,254,0.3)", marginBottom: 4 }}
@@ -998,6 +1092,9 @@ function LayerList({ safeCreator, openPanel, onSelectLayer, onAddMenu, onAddText
             <div className="ccPopoverTitle">Add</div>
             <button className="ccAddMenuItem" onClick={onAddText}>T Text</button>
             <button className="ccAddMenuItem" onClick={onAddSymbol}>✦ Symbol</button>
+            <button className="ccAddMenuItem" style={{ display: "flex", alignItems: "center", gap: 6 }} onClick={onAddImage}>
+              <IconImage size={13} /> Image
+            </button>
             <div className="ccAddMenuSep" />
             {[{ s: "rect", l: "▭ Rectangle" }, { s: "circle", l: "◯ Circle" }, { s: "line", l: "— Line" }, { s: "triangle", l: "△ Triangle" }, { s: "diamond", l: "◇ Diamond" }]
               .map(({ s, l }) => (
@@ -1010,11 +1107,83 @@ function LayerList({ safeCreator, openPanel, onSelectLayer, onAddMenu, onAddText
   );
 }
 
-function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, togglePanel, fontSizeInput, setFontSizeInput, updateSelectedLayer, commit, palette, contrast }) {
+// Painel de camadas: nome (duplo clique renomeia), visibilidade, trava e
+// arrastar para mudar a ordem de empilhamento.
+function LayersPanel({ safeCreator, commit }) {
+  const layers = getLayersByDepth(safeCreator).reverse();
+  const [dragId, setDragId] = useState(null);
+  const [dropIndex, setDropIndex] = useState(null);
+  const [renamingId, setRenamingId] = useState(null);
+
+  const finishDrop = () => {
+    if (dragId != null && dropIndex != null) {
+      // A lista está da frente para o fundo; a pilha guarda do fundo para a frente.
+      const fromTop = layers.findIndex(({ layer }) => layer.id === dragId);
+      const target = dropIndex > fromTop ? dropIndex - 1 : dropIndex;
+      const depthIndex = layers.length - 1 - target;
+      commit((p) => moveCoverLayerToIndex(p, dragId, depthIndex));
+    }
+    setDragId(null);
+    setDropIndex(null);
+  };
+
+  return (
+    <div className="ccPopover ccPopoverDown ccLayersPanel" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="ccPopoverTitle">Layers</div>
+      <div className="ccLayersRows" onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDropIndex(null); }}>
+        {layers.map(({ kind, layer }, i) => {
+          const active = safeCreator.activeLayerId === layer.id;
+          return (
+            <div key={layer.id}
+              className={`ccLayerRow ${active ? "isActive" : ""} ${layer.hidden ? "isHidden" : ""} ${dragId === layer.id ? "isDragging" : ""} ${dropIndex === i ? "dropBefore" : ""} ${dropIndex === layers.length && i === layers.length - 1 ? "dropAfter" : ""}`.trim()}
+              draggable={renamingId !== layer.id}
+              onDragStart={(e) => { setDragId(layer.id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", layer.id); }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                const r = e.currentTarget.getBoundingClientRect();
+                setDropIndex(e.clientY < r.top + r.height / 2 ? i : i + 1);
+              }}
+              onDrop={(e) => { e.preventDefault(); finishDrop(); }}
+              onDragEnd={() => { setDragId(null); setDropIndex(null); }}
+              onClick={() => commit((p) => ({ ...p, activeLayerId: layer.id }))}>
+              <span className="ccLayerRowThumb"><LayerThumb kind={kind} layer={layer} /></span>
+              {renamingId === layer.id ? (
+                <input className="ccLayerRename" autoFocus defaultValue={layer.name || describeCoverLayer(kind, layer)}
+                  onClick={(e) => e.stopPropagation()}
+                  onBlur={(e) => { const name = e.target.value.trim(); commit((p) => patchCoverLayer(p, layer.id, { name })); setRenamingId(null); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                    if (e.key === "Escape") setRenamingId(null);
+                  }} />
+              ) : (
+                <span className="ccLayerRowName" onDoubleClick={(e) => { e.stopPropagation(); setRenamingId(layer.id); }} title="Double-click to rename">
+                  {describeCoverLayer(kind, layer)}
+                </span>
+              )}
+              <button className={`ccLayerRowBtn ${layer.hidden ? "isOff" : ""}`} title={layer.hidden ? "Show" : "Hide"}
+                onClick={(e) => { e.stopPropagation(); commit((p) => patchCoverLayer(p, layer.id, { hidden: !layer.hidden })); }}>
+                {layer.hidden ? <IconEyeOff size={13} /> : <IconEye size={13} />}
+              </button>
+              <button className={`ccLayerRowBtn ${layer.locked ? "isOn" : ""}`} title={layer.locked ? "Unlock" : "Lock position"}
+                onClick={(e) => { e.stopPropagation(); commit((p) => patchCoverLayer(p, layer.id, { locked: !layer.locked })); }}>
+                {layer.locked ? <IconLock size={13} /> : <IconUnlock size={13} />}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="ccThumbHint">Drag to reorder · top of the list is in front</div>
+    </div>
+  );
+}
+
+function LayerTools({ selectedLayer, selectedKind, selectedIsShape, safeCreator, openPanel, togglePanel, fontSizeInput, setFontSizeInput, updateSelectedLayer, commit, palette, contrast }) {
+  const isText = selectedKind === "text";
+  const isImage = selectedKind === "image";
   return (
     <>
       {/* Texto / Símbolo */}
-      {!selectedIsShape && (
+      {isText && (
         <div className="ccPopoverWrap">
           <button className={`ccSidebarTool ${openPanel === "font" ? "isActive" : ""}`}
             onClick={(e) => { e.stopPropagation(); togglePanel("font"); }}>
@@ -1186,7 +1355,37 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
         </div>
       )}
 
+      {/* Imagem */}
+      {isImage && (
+        <div className="ccPopoverWrap">
+          <button className={`ccSidebarTool ${openPanel === "imageLayer" ? "isActive" : ""}`}
+            onClick={(e) => { e.stopPropagation(); togglePanel("imageLayer"); }}>
+            <IconImage size={16} />
+            <span className="ccSidebarToolLabel">Image</span>
+          </button>
+          {openPanel === "imageLayer" && (
+            <div className="ccPopover">
+              <div className="ccPopoverTitle">Image</div>
+              <img className="ccImageLayerPreview" src={selectedLayer.src} alt="" />
+              <div className="ccStyleBar">
+                <button className={`ccStyleBtn ${selectedLayer.flipX ? "isActive" : ""}`} title="Flip horizontally"
+                  onClick={() => updateSelectedLayer({ flipX: !selectedLayer.flipX })}><IconFlip size={15} /></button>
+                <button className={`ccStyleBtn ${selectedLayer.flipY ? "isActive" : ""}`} title="Flip vertically"
+                  onClick={() => updateSelectedLayer({ flipY: !selectedLayer.flipY })}>
+                  <span style={{ display: "inline-flex", transform: "rotate(90deg)" }}><IconFlip size={15} /></span>
+                </button>
+              </div>
+              <div className="ccKnobGroup">
+                <CcKnob label="Size" value={Math.round(selectedLayer.width * 100)} min={3} max={300} step={1} fmt={(v) => `${v}%`} onChange={(v) => updateSelectedLayer({ width: v / 100 })} />
+                <CcKnob label="Opa." value={Math.round((selectedLayer.opacity ?? 1) * 100)} min={0} max={100} step={1} fmt={(v) => `${v}%`} onChange={(v) => updateSelectedLayer({ opacity: v / 100 })} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Cor */}
+      {!isImage && (
       <div className="ccPopoverWrap">
         <button className={`ccSidebarTool ${openPanel === "color" ? "isActive" : ""}`}
           onClick={(e) => { e.stopPropagation(); togglePanel("color"); }}>
@@ -1239,7 +1438,10 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
         )}
       </div>
 
+      )}
+
       {/* Entalhe */}
+      {!isImage && (
       <div className="ccPopoverWrap">
         <button className={`ccSidebarTool ${openPanel === "bevel" ? "isActive" : ""}`}
           onClick={(e) => { e.stopPropagation(); togglePanel("bevel"); }}>
@@ -1270,6 +1472,8 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
           </div>
         )}
       </div>
+
+      )}
 
       {/* Sombra */}
       <div className="ccPopoverWrap">
@@ -1313,7 +1517,7 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
       </div>
 
       {/* Contorno (só texto) */}
-      {!selectedIsShape && (
+      {isText && (
         <div className="ccPopoverWrap">
           <button className={`ccSidebarTool ${openPanel === "stroke" ? "isActive" : ""}`}
             onClick={(e) => { e.stopPropagation(); togglePanel("stroke"); }}>
@@ -1345,10 +1549,10 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
             <div className="ccKnobGroup">
               <CcKnob label="Rot." value={Number(selectedLayer.angle) || 0} min={-180} max={180} step={1} onChange={(v) => updateSelectedLayer({ angle: v })} />
               <CcKnob label="Opa." value={Math.round((selectedLayer.opacity ?? 1) * 100)} min={0} max={100} step={1} fmt={(v) => `${v}%`} onChange={(v) => updateSelectedLayer({ opacity: v / 100 })} />
-              {!selectedIsShape && <CcKnob label="Spc." value={Number(selectedLayer.letterSpacing) || 0} min={-20} max={60} step={1} onChange={(v) => updateSelectedLayer({ letterSpacing: v })} />}
+              {isText && <CcKnob label="Spc." value={Number(selectedLayer.letterSpacing) || 0} min={-20} max={60} step={1} onChange={(v) => updateSelectedLayer({ letterSpacing: v })} />}
               {!selectedIsShape && selectedLayer.orientation !== "vertical" && <CcKnob label="Curve" value={Number(selectedLayer.curve) || 0} min={-100} max={100} step={1} onChange={(v) => updateSelectedLayer({ curve: v })} />}
-              {!selectedIsShape && <CcKnob label={selectedLayer.orientation === "vertical" ? "Col." : "Line"} value={Math.round((Number(selectedLayer.lineHeight) || 1.1) * 100)} min={60} max={250} step={5} fmt={(v) => (v / 100).toFixed(2)} onChange={(v) => updateSelectedLayer({ lineHeight: v / 100 })} />}
-              {!selectedIsShape && <CcKnob label={selectedLayer.orientation === "vertical" ? "H%" : "W%"} value={Math.round((Number(selectedLayer.maxWidth) || 0.78) * 100)} min={20} max={95} step={1} fmt={(v) => `${v}%`} onChange={(v) => updateSelectedLayer({ maxWidth: v / 100 })} />}
+              {isText && <CcKnob label={selectedLayer.orientation === "vertical" ? "Col." : "Line"} value={Math.round((Number(selectedLayer.lineHeight) || 1.1) * 100)} min={60} max={250} step={5} fmt={(v) => (v / 100).toFixed(2)} onChange={(v) => updateSelectedLayer({ lineHeight: v / 100 })} />}
+              {isText && <CcKnob label={selectedLayer.orientation === "vertical" ? "H%" : "W%"} value={Math.round((Number(selectedLayer.maxWidth) || 0.78) * 100)} min={20} max={95} step={1} fmt={(v) => `${v}%`} onChange={(v) => updateSelectedLayer({ maxWidth: v / 100 })} />}
             </div>
           </div>
         )}
@@ -1382,16 +1586,9 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
       </button>
 
       {/* Delete */}
-      {(selectedIsShape || selectedLayer.role === "custom" || selectedLayer.role === "symbol") && (
+      {canDeleteCoverLayer(safeCreator, selectedLayer.id) && (
         <button className="ccSidebarTool" style={{ color: "#f87171" }}
-          onClick={() => commit((prev) => {
-            if (selectedIsShape) {
-              const n = (prev.shapeLayers || []).filter((l) => l.id !== selectedLayer.id);
-              return { ...prev, shapeLayers: n, activeLayerId: prev.textLayers?.[0]?.id || n[0]?.id || null };
-            }
-            const n = (prev.textLayers || []).filter((l) => l.id !== selectedLayer.id);
-            return { ...prev, textLayers: n, activeLayerId: n[0]?.id || null };
-          })}>
+          onClick={() => commit((prev) => deleteCoverLayer(prev, selectedLayer.id))}>
           <IconTrash size={15} />
           <span className="ccSidebarToolLabel">Del</span>
         </button>

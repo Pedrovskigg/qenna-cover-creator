@@ -44,12 +44,15 @@ export function makeCoverTextLayer(partial = {}) {
     angle: typeof partial.angle === "number"
       ? Math.max(-180, Math.min(180, partial.angle))
       : 0,
+    name: typeof partial.name === "string" ? partial.name : "",
+    hidden: !!partial.hidden,
+    locked: !!partial.locked,
     order: typeof partial.order === "number" ? partial.order : 0,
   };
 }
 
 function nextLayerOrder(state) {
-  const all = [...(state?.textLayers || []), ...(state?.shapeLayers || [])];
+  const all = [...(state?.textLayers || []), ...(state?.shapeLayers || []), ...(state?.imageLayers || [])];
   return all.reduce((max, l) => Math.max(max, Number(l.order) || 0), 0) + 1;
 }
 
