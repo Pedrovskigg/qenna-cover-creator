@@ -275,9 +275,81 @@ ipcMain.handle("cover:getEffectiveAiConfig", async () => {
   return { success: true, provider: "openai", apiKey: "", source: null };
 });
 
-ipcMain.handle("cover:saveAndClose", async (_event, coverDataUrl, coverStateJson, projectRoot, coverBgDataUrl) => {
+// ── Fontes do usuário ────────────────────────────────────────────────────────
+// Biblioteca global em userData/fonts (vale para todas as capas). Ao salvar,
+// as fontes usadas são copiadas para <projeto>/cover-fonts, para a capa
+// continuar editável se o projeto for aberto em outra máquina.
+
+const userFontsDir = path.join(app.getPath("userData"), "fonts");
+const FONT_FILE_RE = /\.(ttf|otf|woff2?)$/i;
+const PROJECT_FONTS_DIR = "cover-fonts";
+
+async function readFontDir(dir, source) {
+  try {
+    const names = (await fsPromises.readdir(dir)).filter((n) => FONT_FILE_RE.test(n));
+    return Promise.all(names.map(async (file) => ({ file, source, bytes: await fsPromises.readFile(path.join(dir, file)) })));
+  } catch {
+    return [];
+  }
+}
+
+ipcMain.handle("cover:listUserFonts", async (_event, projectRoot) => {
+  const library = await readFontDir(userFontsDir, "library");
+  const project = projectRoot ? await readFontDir(path.join(projectRoot, PROJECT_FONTS_DIR), "project") : [];
+  const known = new Set(library.map((f) => f.file.toLowerCase()));
+  return { success: true, fonts: [...library, ...project.filter((f) => !known.has(f.file.toLowerCase()))] };
+});
+
+ipcMain.handle("cover:importUserFonts", async () => {
+  try {
+    const result = await electron.dialog.showOpenDialog(mainWindow, {
+      title: "Import fonts",
+      properties: ["openFile", "multiSelections"],
+      filters: [{ name: "Fonts", extensions: ["ttf", "otf", "woff", "woff2"] }],
+    });
+    if (result.canceled || !result.filePaths.length) return { success: true, fonts: [] };
+    await fsPromises.mkdir(userFontsDir, { recursive: true });
+    const fonts = [];
+    for (const src of result.filePaths) {
+      const file = path.basename(src);
+      if (!FONT_FILE_RE.test(file)) continue;
+      const bytes = await fsPromises.readFile(src);
+      await fsPromises.writeFile(path.join(userFontsDir, file), bytes);
+      fonts.push({ file, source: "library", bytes });
+    }
+    return { success: true, fonts };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle("cover:removeUserFont", async (_event, file) => {
+  try {
+    const safe = path.basename(String(file || ""));
+    if (!FONT_FILE_RE.test(safe)) throw new Error("invalid font file");
+    await fsPromises.rm(path.join(userFontsDir, safe), { force: true });
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+async function copyUsedFontsToProject(projectRoot, files) {
+  const list = Array.isArray(files) ? files.map((f) => path.basename(String(f))).filter((f) => FONT_FILE_RE.test(f)) : [];
+  if (!list.length) return;
+  const dest = path.join(projectRoot, PROJECT_FONTS_DIR);
+  await fsPromises.mkdir(dest, { recursive: true });
+  for (const file of list) {
+    try {
+      await fsPromises.copyFile(path.join(userFontsDir, file), path.join(dest, file));
+    } catch {} // já veio do próprio projeto (não está na biblioteca): nada a copiar
+  }
+}
+
+ipcMain.handle("cover:saveAndClose", async (_event, coverDataUrl, coverStateJson, projectRoot, coverBgDataUrl, usedFontFiles) => {
   try {
     if (!projectRoot) throw new Error("projectRoot not provided");
+    await copyUsedFontsToProject(projectRoot, usedFontFiles);
     const coverJpgPath = path.join(projectRoot, "cover.jpg");
     const base64Data = coverDataUrl.replace(/^data:image\/\w+;base64,/, "");
     const buffer = Buffer.from(base64Data, "base64");

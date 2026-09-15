@@ -32,8 +32,20 @@ contextBridge.exposeInMainWorld("miraCover", {
    * @param {?string} coverBgDataUrl — data URL JPEG do fundo sem texto (400x600),
    *   usado pela Prateleira 3D do Qenna como textura de lombada. Opcional.
    */
-  saveAndClose: (coverDataUrl, coverStateJson, projectRoot, coverBgDataUrl) =>
-    ipcRenderer.invoke("cover:saveAndClose", coverDataUrl, coverStateJson, projectRoot, coverBgDataUrl),
+  saveAndClose: (coverDataUrl, coverStateJson, projectRoot, coverBgDataUrl, usedFontFiles) =>
+    ipcRenderer.invoke("cover:saveAndClose", coverDataUrl, coverStateJson, projectRoot, coverBgDataUrl, usedFontFiles),
+
+  /**
+   * Fontes importadas pelo usuário (biblioteca global) + as que vieram na
+   * pasta cover-fonts do projeto. Retorna { success, fonts: [{file, source, bytes}] }.
+   */
+  listUserFonts: (projectRoot) => ipcRenderer.invoke("cover:listUserFonts", projectRoot),
+
+  /** Abre o seletor de arquivos e copia as fontes para a biblioteca. */
+  importUserFonts: () => ipcRenderer.invoke("cover:importUserFonts"),
+
+  /** Remove uma fonte da biblioteca global (pelo nome do arquivo). */
+  removeUserFont: (file) => ipcRenderer.invoke("cover:removeUserFont", file),
 
   /** Fecha sem salvar. */
   close: () => ipcRenderer.invoke("cover:close"),

@@ -20,6 +20,7 @@ import { prepareImageFile, imageLayerHeightFrac } from "./layers/imageLayer.js";
 import { renderCoverDataUrl, COVER_BASE_WIDTH, COVER_BASE_HEIGHT, COVER_EXPORT_PRESETS } from "./canvas/render.js";
 import { buildFontString, layoutTextLayer } from "./canvas/text.js";
 import { normalizeOverlay } from "./canvas/overlay.js";
+import { registerUserFonts, unregisterUserFontFiles } from "./data/userFonts.js";
 
 // ── Root: carrega projeto e gerencia estado ────────────────────────────────────
 
@@ -39,6 +40,7 @@ export default function CoverCreator() {
   const [preview, setPreview] = useState(null);
   const [saving, setSaving] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
+  const [userFonts, setUserFonts] = useState([]);
   const bgInputRef = useRef(null);
   const previewRafRef = useRef(0);
   // Histórico de desfazer/refazer. Edições seguidas (arrastar, girar um knob,
@@ -65,16 +67,39 @@ export default function CoverCreator() {
     })();
   }, []);
 
-  // Carrega caminho do projeto e estado salvo
+  // Carrega caminho do projeto, estado salvo e fontes do usuário
   useEffect(() => {
     window.miraCover.getProjectPath().then(async (root) => {
       setProjectRoot(root);
-      const saved = root ? await loadCoverStateFromProject(root) : null;
+      const [saved, fontsRes] = await Promise.all([
+        root ? loadCoverStateFromProject(root) : null,
+        window.miraCover.listUserFonts?.(root).catch(() => null),
+      ]);
+      if (fontsRes?.success) setUserFonts(await registerUserFonts(fontsRes.fonts));
       setCreator(createCoverCreatorState(saved || {}));
     });
   }, []);
 
-  // Atualiza preview sempre que o estado muda
+  const handleImportFonts = useCallback(async () => {
+    const res = await window.miraCover.importUserFonts?.();
+    if (!res?.success || !res.fonts?.length) return null;
+    const all = await window.miraCover.listUserFonts(projectRoot);
+    const families = await registerUserFonts(all.fonts);
+    setUserFonts(families);
+    // Devolve a primeira família importada, para já aplicá-la no texto.
+    const importedFiles = new Set(res.fonts.map((f) => f.file));
+    return families.find((fam) => fam.files.some((f) => importedFiles.has(f)))?.family || null;
+  }, [projectRoot]);
+
+  const handleRemoveFont = useCallback(async (family) => {
+    const entry = userFonts.find((f) => f.family === family);
+    if (!entry) return;
+    for (const file of entry.files) await window.miraCover.removeUserFont?.(file);
+    unregisterUserFontFiles(entry.files);
+    setUserFonts((prev) => prev.filter((f) => f.family !== family));
+  }, [userFonts]);
+
+  // Atualiza preview sempre que o estado muda (ou quando fontes novas chegam)
   useEffect(() => {
     if (!creator) return;
     if (previewRafRef.current) cancelAnimationFrame(previewRafRef.current);
@@ -82,7 +107,7 @@ export default function CoverCreator() {
       const url = await renderCoverDataUrl({ width: 720, height: 1080, ...creator });
       setPreview(url);
     });
-  }, [creator]);
+  }, [creator, userFonts]);
 
   const handleChange = useCallback((updater) => {
     setCreator((prev) => {
@@ -150,12 +175,14 @@ export default function CoverCreator() {
           })
         : null;
       const stateJson = JSON.stringify(serializeCoverState(creator), null, 2);
-      await window.miraCover.saveAndClose(coverDataUrl, stateJson, projectRoot, coverBgDataUrl);
+      const usedFamilies = new Set((creator.textLayers || []).map((l) => l.fontFamily));
+      const usedFontFiles = userFonts.filter((f) => usedFamilies.has(f.family)).flatMap((f) => f.files);
+      await window.miraCover.saveAndClose(coverDataUrl, stateJson, projectRoot, coverBgDataUrl, usedFontFiles);
     } catch (err) {
       console.error("save error", err);
       setSaving(false);
     }
-  }, [creator, saving, projectRoot]);
+  }, [creator, saving, projectRoot, userFonts]);
 
   const handleClose = useCallback(() => {
     window.miraCover.close();
@@ -238,6 +265,9 @@ export default function CoverCreator() {
         onRedo={handleRedo}
         bgInputRef={bgInputRef}
         saving={saving}
+        userFonts={userFonts}
+        onImportFonts={handleImportFonts}
+        onRemoveFont={handleRemoveFont}
       />
     </>
   );
@@ -245,7 +275,7 @@ export default function CoverCreator() {
 
 // ── Modal de edição ────────────────────────────────────────────────────────────
 
-function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExport, onUndo, onRedo, bgInputRef, saving }) {
+function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExport, onUndo, onRedo, bgInputRef, saving, userFonts, onImportFonts, onRemoveFont }) {
   const previewRef = useRef(null);
   const dragRef = useRef(null);
   const dragRafRef = useRef(0);
@@ -931,6 +961,9 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                 commit={commit}
                 palette={bgAnalysis.palette}
                 contrast={selectedContrast}
+                userFonts={userFonts}
+                onImportFonts={onImportFonts}
+                onRemoveFont={onRemoveFont}
               />
             )}
 
@@ -1177,7 +1210,7 @@ function LayersPanel({ safeCreator, commit }) {
   );
 }
 
-function LayerTools({ selectedLayer, selectedKind, selectedIsShape, safeCreator, openPanel, togglePanel, fontSizeInput, setFontSizeInput, updateSelectedLayer, commit, palette, contrast }) {
+function LayerTools({ selectedLayer, selectedKind, selectedIsShape, safeCreator, openPanel, togglePanel, fontSizeInput, setFontSizeInput, updateSelectedLayer, commit, palette, contrast, userFonts, onImportFonts, onRemoveFont }) {
   const isText = selectedKind === "text";
   const isImage = selectedKind === "image";
   return (
@@ -1225,16 +1258,45 @@ function LayerTools({ selectedLayer, selectedKind, selectedIsShape, safeCreator,
                   </div>
                   <div className="ccFontRow">
                     <select className="modalInput ccFontSelect" value={selectedLayer.fontFamily}
-                      onChange={(e) => updateSelectedLayer({ fontFamily: e.target.value })}>
-                      {COVER_FONT_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value} style={{ fontFamily: opt.value }}>{opt.label}</option>
-                      ))}
+                      onChange={async (e) => {
+                        if (e.target.value === "__import__") {
+                          const family = await onImportFonts?.();
+                          if (family) updateSelectedLayer({ fontFamily: family });
+                          return;
+                        }
+                        updateSelectedLayer({ fontFamily: e.target.value });
+                      }}>
+                      {userFonts?.length > 0 && (
+                        <optgroup label="My fonts">
+                          {userFonts.map((f) => (
+                            <option key={f.family} value={f.family} style={{ fontFamily: `"${f.family}"` }}>{f.family}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {/* Fonte usada na capa mas ausente nesta máquina: mantém visível em vez de trocar em silêncio. */}
+                      {selectedLayer.fontFamily
+                        && !COVER_FONT_OPTIONS.some((o) => o.value === selectedLayer.fontFamily)
+                        && !userFonts?.some((f) => f.family === selectedLayer.fontFamily) && (
+                        <option value={selectedLayer.fontFamily}>{selectedLayer.fontFamily} (missing)</option>
+                      )}
+                      <optgroup label="Built-in">
+                        {COVER_FONT_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value} style={{ fontFamily: opt.value }}>{opt.label}</option>
+                        ))}
+                      </optgroup>
+                      <option value="__import__">Import font…</option>
                     </select>
                     <input className="modalInput ccSizeInput" type="number" min={1} max={800}
                       value={fontSizeInput}
                       onChange={(e) => { setFontSizeInput(e.target.value); const n = Number(e.target.value); if (Number.isFinite(n) && n >= 1 && n <= 800) updateSelectedLayer({ fontSize: n }); }}
                       onBlur={() => { const n = Number(fontSizeInput); const c = Math.min(800, Math.max(1, Number.isFinite(n) && n > 0 ? n : 56)); updateSelectedLayer({ fontSize: c }); setFontSizeInput(String(c)); }} />
                   </div>
+                  {userFonts?.some((f) => f.family === selectedLayer.fontFamily && f.source === "library") && (
+                    <button className="ccAiHintLink" style={{ alignSelf: "flex-start", fontSize: 10.5 }}
+                      onClick={() => onRemoveFont?.(selectedLayer.fontFamily)}>
+                      Remove “{selectedLayer.fontFamily}” from my fonts
+                    </button>
+                  )}
                   <div className="ccStyleBar">
                     <button className={`ccStyleBtn ${selectedLayer.fontWeight === "700" ? "isActive" : ""}`}
                       onClick={() => updateSelectedLayer({ fontWeight: selectedLayer.fontWeight === "700" ? "normal" : "700" })}><strong>B</strong></button>
