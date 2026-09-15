@@ -244,6 +244,15 @@ export const IconFlip = ({ size = 16 }) => (
   </IconBase>
 );
 
+export const IconTemplates = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <rect x="3.5" y="3.5" width="7" height="10" rx="1.2" />
+    <rect x="13.5" y="3.5" width="7" height="6" rx="1.2" />
+    <rect x="13.5" y="12.5" width="7" height="8" rx="1.2" />
+    <rect x="3.5" y="16.5" width="7" height="4" rx="1.2" />
+  </IconBase>
+);
+
 export const IconSettings = ({ size = 16 }) => (
   <IconBase size={size}>
     <circle cx="12" cy="12" r="3" />

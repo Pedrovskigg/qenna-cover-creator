@@ -327,6 +327,48 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   justify-content: center;
 }
 
+/* Templates de layout */
+/* Fica na lateral esquerda, para a capa continuar visível ao aplicar. */
+.ccTemplatesCard {
+  position: absolute;
+  left: 14px;
+  top: 16px;
+  bottom: 44px;
+  z-index: 16;
+  width: 236px;
+  overflow-y: auto;
+  background: var(--ui-menu, #1e1e22);
+  border: 1px solid rgba(255,255,255,0.13);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ccTemplatesCard { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.18) transparent; }
+.ccTemplatesCard::-webkit-scrollbar { width: 4px; }
+.ccTemplatesCard::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 2px; }
+.ccTemplatesCard::-webkit-scrollbar-button { display: none; height: 0; }
+.ccTemplatesGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.ccTemplateItem {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 4px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: var(--ui-text, #eaeaea);
+  font-size: 11px;
+}
+.ccTemplateItem:hover { border-color: var(--ui-accent, #6ea8fe); background: rgba(110,168,254,0.08); }
+.ccTemplateItem img,
+.ccTemplateLoading { width: 100%; aspect-ratio: 2 / 3; border-radius: 4px; display: block; object-fit: cover; }
+.ccTemplateLoading { background: rgba(255,255,255,0.06); }
+
 /* Miniatura de loja */
 .ccPreviewZone { position: relative; }
 .ccThumbCard {

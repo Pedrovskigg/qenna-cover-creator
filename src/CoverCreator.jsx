@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import CoverCropper from "./CoverCropper.jsx";
 import CcKnob from "./ui/CcKnob.jsx";
-import { IconX, IconFilter, IconMaximize, IconDownload, IconBevel, IconShadow, IconGlow, IconStroke, IconTransform, IconBorderFrame, IconSave, IconTrash, IconImage, IconSettings, IconSparkle, IconUndo, IconRedo, IconCopy, IconLayersOrder, IconTextVertical, IconTextHorizontal, IconOverlay, IconEyedropper, IconThumbnail, IconWarning, IconEye, IconEyeOff, IconLock, IconUnlock, IconFlip } from "./icons/index.jsx";
+import { IconX, IconFilter, IconMaximize, IconDownload, IconBevel, IconShadow, IconGlow, IconStroke, IconTransform, IconBorderFrame, IconSave, IconTrash, IconImage, IconSettings, IconSparkle, IconUndo, IconRedo, IconCopy, IconLayersOrder, IconTextVertical, IconTextHorizontal, IconOverlay, IconEyedropper, IconThumbnail, IconWarning, IconEye, IconEyeOff, IconLock, IconUnlock, IconFlip, IconTemplates } from "./icons/index.jsx";
+import { COVER_TEMPLATES, applyCoverTemplate } from "./data/templates.js";
 import { extractPaletteFromImageData, measureTextContrast } from "./utils/palette.js";
 import { COVER_FONT_OPTIONS } from "./data/fonts.js";
 import { COVER_EMOJI_PICKS } from "./data/symbols.js";
@@ -290,6 +291,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
   const [openPanel, setOpenPanel] = useState(null);
   const [showAiSettings, setShowAiSettings] = useState(false);
   const [showThumb, setShowThumb] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   const imageLayerInputRef = useRef(null);
 
   const safeCreator = ensureCoverCreatorState(creator);
@@ -887,6 +889,11 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                 </div>
 
                 {showThumb && <StoreThumbnail preview={preview} onClose={() => setShowThumb(false)} />}
+                {showTemplates && (
+                  <TemplatesPanel creator={safeCreator}
+                    onApply={(key) => commit((prev) => applyCoverTemplate(prev, key))}
+                    onClose={() => setShowTemplates(false)} />
+                )}
                 <div className="coverCreatorPreviewHint">Drag to position · Delete to remove</div>
 
                 <div className="ccPreviewBar">
@@ -895,6 +902,9 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                     <input className="coverCreatorSwatch" type="color" value={safeCreator.bgColor}
                       onChange={(e) => commit((prev) => ({ ...prev, bgColor: e.target.value }))} />
                   </label>
+                  <button className={`ccToolbarBtn ${showTemplates ? "isActive" : ""}`} onClick={() => setShowTemplates((v) => !v)} title="Layout templates">
+                    <IconTemplates size={14} />
+                  </button>
                   <button className={`ccToolbarBtn ${showThumb ? "isActive" : ""}`} onClick={() => setShowThumb((v) => !v)} title="Store thumbnail preview">
                     <IconThumbnail size={14} />
                   </button>
@@ -1740,6 +1750,50 @@ function GradientFillControls({ layer, secondKey, onChange }) {
       )}
       {isGradient && metallic && <div className="ccThumbHint">The metallic bevel replaces the fill while it's on.</div>}
     </>
+  );
+}
+
+// Cada template renderizado em miniatura sobre a arte e os textos atuais,
+// para escolher vendo o resultado real em vez de um exemplo genérico.
+function TemplatesPanel({ creator, onApply, onClose }) {
+  const [thumbs, setThumbs] = useState({});
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (const tpl of COVER_TEMPLATES) {
+        const applied = applyCoverTemplate(ensureCoverCreatorState(creator), tpl.key);
+        const url = await renderCoverDataUrl({
+          ...applied,
+          width: 120, height: 180,
+          textScale: 120 / COVER_BASE_WIDTH,
+        });
+        if (cancelled) return;
+        setThumbs((prev) => ({ ...prev, [tpl.key]: url }));
+      }
+    })();
+    return () => { cancelled = true; };
+    // Só ao abrir: re-renderizar a cada edição deixaria o editor lento.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="ccTemplatesCard" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="ccThumbHeader">
+        <span className="ccPopoverTitle">Layout templates</span>
+        <button className="coverCreatorCloseBtn" onClick={onClose} title="Close"><IconX size={12} /></button>
+      </div>
+      <div className="ccTemplatesGrid">
+        {COVER_TEMPLATES.map((tpl) => (
+          <button key={tpl.key} className="ccTemplateItem" onClick={() => onApply(tpl.key)}>
+            {thumbs[tpl.key]
+              ? <img src={thumbs[tpl.key]} alt="" />
+              : <span className="ccTemplateLoading" />}
+            <span>{tpl.label}</span>
+          </button>
+        ))}
+      </div>
+      <div className="ccThumbHint">Restyles title and author, keeps your art and other layers. Ctrl+Z to undo.</div>
+    </div>
   );
 }
 
