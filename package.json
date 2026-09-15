@@ -1,7 +1,7 @@
 {
   "name": "mira-cover",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Mira Cover Creator — standalone app",
   "author": "P.H. Lobato",
   "main": "electron/main.cjs",
@@ -9,6 +9,7 @@
     "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5174 && electron .\"",
     "build": "vite build",
     "preview": "vite preview",
+    "fonts:sync": "node scripts/sync-fonts.mjs",
     "dist:win": "npm run build && electron-builder --win nsis portable"
   },
   "dependencies": {
