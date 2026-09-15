@@ -1,6 +1,6 @@
 import { clamp01 } from "../utils/math.js";
 import { lightenHex, darkenHex } from "../utils/color.js";
-import { makeCoverShapeLayer } from "../layers/shapeLayer.js";
+import { linearGradientAcrossBox } from "./text.js";
 
 export function drawShapePath(ctx, shape, x, y, w, h, cornerRadius = 0) {
   ctx.beginPath();
@@ -152,9 +152,17 @@ export function drawShapeLayer(ctx, layer, width, height) {
   if (!isLine && fillOpacity > 0) {
     applyShapeShadow(ctx, layer);
     ctx.globalAlpha = baseOpacity * fillOpacity;
-    ctx.fillStyle = isMetallic
-      ? buildShapeGradient(ctx, bevel, layer.bevelColor, sx, sy, sh)
-      : (layer.fill || "#ffffff");
+    if (isMetallic) {
+      ctx.fillStyle = buildShapeGradient(ctx, bevel, layer.bevelColor, sx, sy, sh);
+    } else if (layer.fillType === "gradient") {
+      const g = linearGradientAcrossBox({ x: sx, y: sy, w: sw, h: sh }, layer.gradientAngle, []);
+      const grad = ctx.createLinearGradient(g.x0, g.y0, g.x1, g.y1);
+      grad.addColorStop(0, layer.fill || "#ffffff");
+      grad.addColorStop(1, layer.fill2 || "#000000");
+      ctx.fillStyle = grad;
+    } else {
+      ctx.fillStyle = layer.fill || "#ffffff";
+    }
     drawShapePath(ctx, layer.shape, sx, sy, sw, sh, cr);
     ctx.fill();
     clearShadow(ctx);

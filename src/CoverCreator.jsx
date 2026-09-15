@@ -336,7 +336,8 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
       const w = Math.max(minSide, box.w);
       const h = Math.max(minSide, box.h);
       const x = box.w < minSide ? anchorX - w / 2 : box.x;
-      map[layer.id] = { x, y: box.y, w, h, anchorX, anchorY };
+      const y = box.h < minSide ? Math.min(box.y, anchorY) : box.y;
+      map[layer.id] = { x, y, w, h, anchorX, anchorY };
     }
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -390,8 +391,11 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
     if (!box) return null;
     const bevel = selectedLayer.bevel || "none";
     if (bevel !== "none" && bevel !== "emboss" && bevel !== "engrave") return null;
-    const ratio = measureTextContrast(bgAnalysis.data, COVER_BASE_WIDTH, box, selectedLayer.color || "#ffffff");
-    if (ratio == null) return null;
+    const colors = [selectedLayer.color || "#ffffff"];
+    if (selectedLayer.fillType === "gradient") colors.push(selectedLayer.color2 || "#000000");
+    const ratios = colors.map((c) => measureTextContrast(bgAnalysis.data, COVER_BASE_WIDTH, box, c)).filter((r) => r != null);
+    if (!ratios.length) return null;
+    const ratio = Math.min(...ratios);
     // Contorno, brilho ou sombra difusa já separam o texto do fundo.
     const mitigated = (Number(selectedLayer.strokeWidth) || 0) >= 1
       || (Number(selectedLayer.glowSize) || 0) >= 4
@@ -761,7 +765,9 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                       const isActive = safeCreator.activeLayerId === layer.id;
                       const box = previewTextBoxes[layer.id];
                       if (!box) return null;
+                      // Âncora nem sempre é o topo da caixa (texto em tigela sobe acima dela).
                       const originX = box.w > 0 ? ((box.anchorX - box.x) / box.w) * 100 : 50;
+                      const originY = box.h > 0 ? ((box.anchorY - box.y) / box.h) * 100 : 0;
                       return (
                         <div key={layer.id} className={`coverCreatorTextHandle ${isActive ? "isActive" : ""}`.trim()}
                           title={layer.text || "Text"}
@@ -771,7 +777,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                             width: `${(box.w / COVER_BASE_WIDTH) * 100}%`,
                             height: `${(box.h / COVER_BASE_HEIGHT) * 100}%`,
                             transform: layer.angle ? `rotate(${Number(layer.angle)}deg)` : undefined,
-                            transformOrigin: `${originX}% 0%`,
+                            transformOrigin: `${originX}% ${originY}%`,
                           }}
                           onMouseDown={(e) => handleLayerMouseDown(e, layer.id)}
                           onClick={() => commit((prev) => ({ ...prev, activeLayerId: layer.id }))}
@@ -1200,6 +1206,7 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
                   <span className="ccNumSuffix">%</span>
                 </div>
                 <ColorSuggestions palette={palette} onPick={(hex) => updateSelectedLayer({ fill: hex })} />
+                <GradientFillControls layer={selectedLayer} secondKey="fill2" onChange={updateSelectedLayer} />
                 <div className="ccPropRow">
                   <label className="ccColorBtn"><input type="color" value={selectedLayer.strokeColor || "#fff"} onChange={(e) => updateSelectedLayer({ strokeColor: e.target.value })} /><span className="ccColorDot" style={{ background: selectedLayer.strokeColor || "#fff" }} /></label>
                   <span className="ccPropLabel">Outline</span>
@@ -1219,6 +1226,7 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
                   )}
                 </div>
                 <ColorSuggestions palette={palette} onPick={(hex) => updateSelectedLayer({ color: hex })} />
+                <GradientFillControls layer={selectedLayer} secondKey="color2" onChange={updateSelectedLayer} />
                 {contrast?.low && (
                   <div className="ccContrastHint">
                     <IconWarning size={13} />
@@ -1338,6 +1346,7 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
               <CcKnob label="Rot." value={Number(selectedLayer.angle) || 0} min={-180} max={180} step={1} onChange={(v) => updateSelectedLayer({ angle: v })} />
               <CcKnob label="Opa." value={Math.round((selectedLayer.opacity ?? 1) * 100)} min={0} max={100} step={1} fmt={(v) => `${v}%`} onChange={(v) => updateSelectedLayer({ opacity: v / 100 })} />
               {!selectedIsShape && <CcKnob label="Spc." value={Number(selectedLayer.letterSpacing) || 0} min={-20} max={60} step={1} onChange={(v) => updateSelectedLayer({ letterSpacing: v })} />}
+              {!selectedIsShape && selectedLayer.orientation !== "vertical" && <CcKnob label="Curve" value={Number(selectedLayer.curve) || 0} min={-100} max={100} step={1} onChange={(v) => updateSelectedLayer({ curve: v })} />}
               {!selectedIsShape && <CcKnob label={selectedLayer.orientation === "vertical" ? "Col." : "Line"} value={Math.round((Number(selectedLayer.lineHeight) || 1.1) * 100)} min={60} max={250} step={5} fmt={(v) => (v / 100).toFixed(2)} onChange={(v) => updateSelectedLayer({ lineHeight: v / 100 })} />}
               {!selectedIsShape && <CcKnob label={selectedLayer.orientation === "vertical" ? "H%" : "W%"} value={Math.round((Number(selectedLayer.maxWidth) || 0.78) * 100)} min={20} max={95} step={1} fmt={(v) => `${v}%`} onChange={(v) => updateSelectedLayer({ maxWidth: v / 100 })} />}
             </div>
@@ -1445,6 +1454,33 @@ function ColorSuggestions({ palette, onPick }) {
           onClick={() => onPick(hex)} />
       ))}
     </div>
+  );
+}
+
+// Sólido ou degradê de duas cores: a primeira cor é a cor normal da camada
+// (color/fill), a segunda fica em `secondKey`.
+function GradientFillControls({ layer, secondKey, onChange }) {
+  const isGradient = layer.fillType === "gradient";
+  const metallic = ["gold", "silver", "copper", "custom"].includes(layer.bevel);
+  const second = layer[secondKey] || "#000000";
+  return (
+    <>
+      <div className="ccStyleBar">
+        <button className={`ccFilterPresetBtn ${!isGradient ? "isActive" : ""}`} onClick={() => onChange({ fillType: "solid" })}>Solid</button>
+        <button className={`ccFilterPresetBtn ${isGradient ? "isActive" : ""}`} onClick={() => onChange({ fillType: "gradient" })}>Gradient</button>
+      </div>
+      {isGradient && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <label className="ccColorBtn">
+            <input type="color" value={second} onChange={(e) => onChange({ [secondKey]: e.target.value })} />
+            <span className="ccColorDot" style={{ background: second }} />
+          </label>
+          <span className="ccPropLabel">Second color</span>
+          <CcKnob label="Angle" value={Number(layer.gradientAngle) || 0} min={0} max={360} step={5} fmt={(v) => `${v}°`} onChange={(v) => onChange({ gradientAngle: v })} />
+        </div>
+      )}
+      {isGradient && metallic && <div className="ccThumbHint">The metallic bevel replaces the fill while it's on.</div>}
+    </>
   );
 }
 

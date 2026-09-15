@@ -16,7 +16,11 @@ export function makeCoverTextLayer(partial = {}) {
     lineHeight: typeof partial.lineHeight === "number"
       ? Math.max(0.6, Math.min(2.5, partial.lineHeight))
       : 1.1,
+    curve: typeof partial.curve === "number" ? Math.max(-100, Math.min(100, partial.curve)) : 0,
     color: partial.color || "#ffffff",
+    fillType: partial.fillType === "gradient" ? "gradient" : "solid",
+    color2: partial.color2 || "#f5b84a",
+    gradientAngle: typeof partial.gradientAngle === "number" ? partial.gradientAngle : 0,
     align: partial.align || "center",
     shadowColor: partial.shadowColor || "#000000",
     shadowBlur: Math.max(0, Number(partial.shadowBlur) || 0),
