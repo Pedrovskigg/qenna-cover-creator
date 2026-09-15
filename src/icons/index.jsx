@@ -184,7 +184,30 @@ export const IconOverlay = ({ size = 16 }) => (
   </IconBase>
 );
 
-export const IconSettings =({ size = 16 }) => (
+export const IconEyedropper = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <path d="M14.5 5.5l4 4" />
+    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3l-2 2-3-3z" />
+    <path d="M15 8l-8.5 8.5L5 20l3.5-1.5L17 10" />
+  </IconBase>
+);
+
+export const IconThumbnail = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <rect x="3" y="4" width="11" height="16" rx="1.5" />
+    <rect x="16.5" y="13" width="4.5" height="7" rx="1" />
+  </IconBase>
+);
+
+export const IconWarning = ({ size = 16 }) => (
+  <IconBase size={size}>
+    <path d="M12 4l9 16H3z" />
+    <path d="M12 10v4.5" />
+    <circle cx="12" cy="17.3" r="0.6" fill="currentColor" />
+  </IconBase>
+);
+
+export const IconSettings = ({ size = 16 }) => (
   <IconBase size={size}>
     <circle cx="12" cy="12" r="3" />
     <path d="M12 3v2.4" />

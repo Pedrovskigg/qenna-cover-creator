@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import CoverCropper from "./CoverCropper.jsx";
 import CcKnob from "./ui/CcKnob.jsx";
-import { IconX, IconFilter, IconMaximize, IconDownload, IconBevel, IconShadow, IconGlow, IconStroke, IconTransform, IconBorderFrame, IconSave, IconTrash, IconImage, IconSettings, IconSparkle, IconUndo, IconRedo, IconCopy, IconLayersOrder, IconTextVertical, IconTextHorizontal, IconOverlay } from "./icons/index.jsx";
+import { IconX, IconFilter, IconMaximize, IconDownload, IconBevel, IconShadow, IconGlow, IconStroke, IconTransform, IconBorderFrame, IconSave, IconTrash, IconImage, IconSettings, IconSparkle, IconUndo, IconRedo, IconCopy, IconLayersOrder, IconTextVertical, IconTextHorizontal, IconOverlay, IconEyedropper, IconThumbnail, IconWarning } from "./icons/index.jsx";
+import { extractPaletteFromImageData, measureTextContrast } from "./utils/palette.js";
 import { COVER_FONT_OPTIONS } from "./data/fonts.js";
 import { COVER_EMOJI_PICKS } from "./data/symbols.js";
 import { COVER_STYLE_PRESETS } from "./ai/coverStylePresets.js";
@@ -253,6 +254,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
   const [baseCoverThumbs, setBaseCoverThumbs] = useState({});
   const [openPanel, setOpenPanel] = useState(null);
   const [showAiSettings, setShowAiSettings] = useState(false);
+  const [showThumb, setShowThumb] = useState(false);
 
   const safeCreator = ensureCoverCreatorState(creator);
   const allLayers = [...(safeCreator?.textLayers || []), ...(safeCreator?.shapeLayers || [])];
@@ -339,6 +341,63 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [safeCreator?.textLayers, fontsVersion]);
+
+  // Tudo que fica atrás do texto (fundo, filtro, overlay, formas), renderizado
+  // sem texto no espaço do editor. Alimenta a paleta sugerida e o aviso de
+  // contraste. Debounce: arrastar um knob não deve re-analisar a cada frame.
+  const [bgAnalysis, setBgAnalysis] = useState({ palette: [], data: null });
+  const bgAnalysisKey = JSON.stringify([
+    safeCreator?.bgColor, safeCreator?.bgImage?.length, safeCreator?.bgImage?.slice(-64),
+    safeCreator?.bgImageFocusX, safeCreator?.bgImageFocusY, safeCreator?.bgImageScale,
+    safeCreator?.bgFilter, safeCreator?.overlay, safeCreator?.shapeLayers,
+  ]);
+  useEffect(() => {
+    if (!safeCreator) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const url = await renderCoverDataUrl({
+          ...safeCreator,
+          overlay: { ...normalizeOverlay(safeCreator.overlay), grain: 0 },
+          width: COVER_BASE_WIDTH, height: COVER_BASE_HEIGHT,
+          renderText: false,
+        });
+        if (cancelled || !url) return;
+        const img = new Image();
+        await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = url; });
+        const canvas = document.createElement("canvas");
+        canvas.width = COVER_BASE_WIDTH;
+        canvas.height = COVER_BASE_HEIGHT;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0);
+        const data = ctx.getImageData(0, 0, COVER_BASE_WIDTH, COVER_BASE_HEIGHT).data;
+        // Paleta a partir de uma versão reduzida — rápida e sem ruído de pixel.
+        const small = document.createElement("canvas");
+        small.width = 64; small.height = 96;
+        const sctx = small.getContext("2d", { willReadFrequently: true });
+        sctx.drawImage(img, 0, 0, 64, 96);
+        const palette = extractPaletteFromImageData(sctx.getImageData(0, 0, 64, 96).data, 8);
+        if (!cancelled) setBgAnalysis({ palette, data });
+      } catch {}
+    }, 350);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bgAnalysisKey]);
+
+  const selectedContrast = useMemo(() => {
+    if (!selectedLayer || selectedIsShape || !bgAnalysis.data) return null;
+    const box = previewTextBoxes[selectedLayer.id];
+    if (!box) return null;
+    const bevel = selectedLayer.bevel || "none";
+    if (bevel !== "none" && bevel !== "emboss" && bevel !== "engrave") return null;
+    const ratio = measureTextContrast(bgAnalysis.data, COVER_BASE_WIDTH, box, selectedLayer.color || "#ffffff");
+    if (ratio == null) return null;
+    // Contorno, brilho ou sombra difusa já separam o texto do fundo.
+    const mitigated = (Number(selectedLayer.strokeWidth) || 0) >= 1
+      || (Number(selectedLayer.glowSize) || 0) >= 4
+      || (Number(selectedLayer.shadowBlur) || 0) >= 4;
+    return { ratio, low: ratio < 3 && !mitigated };
+  }, [selectedLayer, selectedIsShape, bgAnalysis.data, previewTextBoxes]);
 
   const commit = useCallback((updater) => {
     onChange((prev) => {
@@ -731,6 +790,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                   </div>
                 </div>
 
+                {showThumb && <StoreThumbnail preview={preview} onClose={() => setShowThumb(false)} />}
                 <div className="coverCreatorPreviewHint">Drag to position · Delete to remove</div>
 
                 <div className="ccPreviewBar">
@@ -739,6 +799,9 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                     <input className="coverCreatorSwatch" type="color" value={safeCreator.bgColor}
                       onChange={(e) => commit((prev) => ({ ...prev, bgColor: e.target.value }))} />
                   </label>
+                  <button className={`ccToolbarBtn ${showThumb ? "isActive" : ""}`} onClick={() => setShowThumb((v) => !v)} title="Store thumbnail preview">
+                    <IconThumbnail size={14} />
+                  </button>
                   <button className="ccToolbarBtn" onClick={() => commit((prev) => ({ ...prev, previewExpanded: !prev.previewExpanded }))} title="Expand">
                     <IconMaximize size={14} />
                   </button>
@@ -782,6 +845,8 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                 setFontSizeInput={setFontSizeInput}
                 updateSelectedLayer={updateSelectedLayer}
                 commit={commit}
+                palette={bgAnalysis.palette}
+                contrast={selectedContrast}
               />
             )}
 
@@ -838,7 +903,7 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                 <span className="ccSidebarToolLabel">Overlay</span>
               </button>
               {openPanel === "overlay" && (
-                <OverlayPanel overlay={overlay} commit={commit} />
+                <OverlayPanel overlay={overlay} commit={commit} palette={bgAnalysis.palette} />
               )}
             </div>
 
@@ -872,6 +937,9 @@ function CoverCreatorModal({ creator, preview, onChange, onClose, onSave, onExpo
                         onChange={(e) => commit((p) => ({ ...p, borderWidth: Number(e.target.value) || 5 }))} />
                       <span className="ccNumSuffix">px</span>
                     </div>
+                  )}
+                  {safeCreator.borderEnabled && (
+                    <ColorSuggestions palette={bgAnalysis.palette} onPick={(hex) => commit((p) => ({ ...p, borderColor: hex }))} />
                   )}
                 </div>
               )}
@@ -936,7 +1004,7 @@ function LayerList({ safeCreator, openPanel, onSelectLayer, onAddMenu, onAddText
   );
 }
 
-function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, togglePanel, fontSizeInput, setFontSizeInput, updateSelectedLayer, commit }) {
+function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, togglePanel, fontSizeInput, setFontSizeInput, updateSelectedLayer, commit, palette, contrast }) {
   return (
     <>
       {/* Texto / Símbolo */}
@@ -1117,10 +1185,11 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
         <button className={`ccSidebarTool ${openPanel === "color" ? "isActive" : ""}`}
           onClick={(e) => { e.stopPropagation(); togglePanel("color"); }}>
           <span style={{ width: 20, height: 20, borderRadius: "50%", background: selectedIsShape ? (selectedLayer.fill || "#fff") : (selectedLayer.color || "#fff"), border: "2px solid rgba(255,255,255,0.25)", display: "block" }} />
+          {contrast?.low && <span className="ccToolBadge" title="Low contrast with the background"><IconWarning size={10} /></span>}
           <span className="ccSidebarToolLabel">Color</span>
         </button>
         {openPanel === "color" && (
-          <div className="ccPopover">
+          <div className="ccPopover" style={{ minWidth: 230 }}>
             <div className="ccPopoverTitle">Color</div>
             {selectedIsShape ? (
               <>
@@ -1130,6 +1199,7 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
                   <input className="ccNumInput" type="number" min={0} max={100} value={Math.round((selectedLayer.fillOpacity ?? 1) * 100)} onChange={(e) => updateSelectedLayer({ fillOpacity: Math.max(0, Math.min(100, Number(e.target.value))) / 100 })} />
                   <span className="ccNumSuffix">%</span>
                 </div>
+                <ColorSuggestions palette={palette} onPick={(hex) => updateSelectedLayer({ fill: hex })} />
                 <div className="ccPropRow">
                   <label className="ccColorBtn"><input type="color" value={selectedLayer.strokeColor || "#fff"} onChange={(e) => updateSelectedLayer({ strokeColor: e.target.value })} /><span className="ccColorDot" style={{ background: selectedLayer.strokeColor || "#fff" }} /></label>
                   <span className="ccPropLabel">Outline</span>
@@ -1138,10 +1208,24 @@ function LayerTools({ selectedLayer, selectedIsShape, safeCreator, openPanel, to
                 </div>
               </>
             ) : (
-              <div className="ccPropRow">
-                <label className="ccColorBtn"><input type="color" value={selectedLayer.color || "#fff"} onChange={(e) => updateSelectedLayer({ color: e.target.value })} /><span className="ccColorDot" style={{ background: selectedLayer.color || "#fff" }} /></label>
-                <span className="ccPropLabel">Text color</span>
-              </div>
+              <>
+                <div className="ccPropRow">
+                  <label className="ccColorBtn"><input type="color" value={selectedLayer.color || "#fff"} onChange={(e) => updateSelectedLayer({ color: e.target.value })} /><span className="ccColorDot" style={{ background: selectedLayer.color || "#fff" }} /></label>
+                  <span className="ccPropLabel">Text color</span>
+                  {contrast && (
+                    <span className={`ccContrastTag ${contrast.low ? "isLow" : ""}`} title="Contrast against the background behind this text (WCAG ratio)">
+                      {contrast.ratio.toFixed(1)}:1
+                    </span>
+                  )}
+                </div>
+                <ColorSuggestions palette={palette} onPick={(hex) => updateSelectedLayer({ color: hex })} />
+                {contrast?.low && (
+                  <div className="ccContrastHint">
+                    <IconWarning size={13} />
+                    <span>Hard to read over this part of the image. Try a lighter or darker color, an outline, a soft shadow, or an overlay.</span>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -1338,6 +1422,54 @@ function ImageEditPanel({ bgFilter, commit, onBack }) {
   );
 }
 
+const hasEyeDropper = typeof window !== "undefined" && "EyeDropper" in window;
+
+// Cores tiradas da própria arte + conta-gotas para pegar qualquer cor da tela.
+function ColorSuggestions({ palette, onPick }) {
+  if (!hasEyeDropper && !palette?.length) return null;
+  const pickFromScreen = async () => {
+    try {
+      const { sRGBHex } = await new window.EyeDropper().open();
+      if (sRGBHex) onPick(sRGBHex);
+    } catch {} // usuário cancelou com Esc
+  };
+  return (
+    <div className="ccSwatchRow">
+      {hasEyeDropper && (
+        <button className="ccSwatchPick" title="Pick a color from the screen" onClick={pickFromScreen}>
+          <IconEyedropper size={13} />
+        </button>
+      )}
+      {(palette || []).map((hex) => (
+        <button key={hex} className="ccSwatch" style={{ background: hex }} title={`${hex} (from cover art)`}
+          onClick={() => onPick(hex)} />
+      ))}
+    </div>
+  );
+}
+
+function StoreThumbnail({ preview, onClose }) {
+  if (!preview) return null;
+  return (
+    <div className="ccThumbCard" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="ccThumbHeader">
+        <span className="ccPopoverTitle">Store thumbnail</span>
+        <button className="coverCreatorCloseBtn" onClick={onClose} title="Close"><IconX size={12} /></button>
+      </div>
+      <div className="ccThumbSizes">
+        {/* Tamanhos típicos de vitrine: resultado de busca e página do produto. */}
+        {[{ w: 64, label: "Search" }, { w: 120, label: "Product" }].map(({ w, label }) => (
+          <div key={w} className="ccThumbItem">
+            <img src={preview} alt="" style={{ width: w, height: w * 1.5 }} />
+            <span>{label}</span>
+          </div>
+        ))}
+      </div>
+      <div className="ccThumbHint">Can you still read the title?</div>
+    </div>
+  );
+}
+
 // A posição padrão de .ccPopover centraliza no botão que o abre, o que vaza
 // pra fora da janela quando um popover alto sai de um botão perto do rodapé
 // da sidebar (ex: "Image", "Overlay"). Depois do primeiro paint, mede o
@@ -1363,7 +1495,7 @@ function usePopoverFitInViewport(contentKey) {
   return [ref, offsetY ? { transform: `translateY(calc(-50% + ${offsetY}px))` } : {}];
 }
 
-function OverlayPanel({ overlay, commit }) {
+function OverlayPanel({ overlay, commit, palette }) {
   const hasGradient = overlay.type !== "none";
   const [popoverRef, popoverStyle] = usePopoverFitInViewport(hasGradient);
   const patch = (next) => commit((p) => ({ ...p, overlay: { ...normalizeOverlay(p.overlay), ...next } }));
@@ -1388,6 +1520,7 @@ function OverlayPanel({ overlay, commit }) {
           <CcKnob label="Size" value={Math.round(overlay.size * 100)} min={5} max={100} step={1} fmt={(v) => `${v}%`} onChange={(v) => patch({ size: v / 100 })} />
         </div>
       )}
+      {hasGradient && <ColorSuggestions palette={palette} onPick={(hex) => patch({ color: hex })} />}
       <div className="ccAddMenuSep" />
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span className="ccPropLabel">Film grain</span>
